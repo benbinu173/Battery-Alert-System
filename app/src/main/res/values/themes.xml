@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Host theme for the Activity window. All real styling lives in Compose
+      (presentation/theme/Theme.kt); this only needs to be a dark, action-bar-less
+      window so there is no XML styling fighting the Compose theme.
+    -->
+    <style name="Theme.BatteryAlertSystem" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
