@@ -30,6 +30,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -99,14 +100,24 @@ private fun Header(state: AircraftUiState, onBack: () -> Unit) {
             color = GuardColors.TextPrimary,
             fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false,
         )
         Spacer(Modifier.width(12.dp))
+        // The tagline is the only element here that may give up space, so it is the only one
+        // that is allowed to. Everything else — the titled heading, the state pill, the way
+        // back — is pinned to one line at its natural size, because those are the three things
+        // this header has to say. `fill = false` keeps it at its own width on a wide screen
+        // rather than spreading it across the gap; it only shrinks when there is nothing left.
         Text(
             text = "What the app knows that the link does not",
             color = GuardColors.TextMuted,
             fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
         // The state of the configuration as a whole, in one glance: the operator should not
         // have to read a sentence to find out whether the app can compute a flight time.
         //

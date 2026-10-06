@@ -134,6 +134,11 @@ fun StatusPill(
             color = textColor,
             fontSize = 10.sp,
             letterSpacing = 1.sp,
+            // Pills carry short, variable-length state words — "Link up", "configured",
+            // "412 rows". One that wrapped would grow into a two-line lozenge and drag the
+            // row's height with it, so they are held to a single line wherever they appear.
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -188,6 +193,8 @@ fun ChoiceChip(
             color = if (selected) GuardColors.Accent else GuardColors.TextSecondary,
             fontSize = 12.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
