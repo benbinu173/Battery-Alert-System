@@ -8,4 +8,8 @@ build/
 /captures
 .externalNativeBuild
 .cxx
-local.properties
+
+# Local tooling state. This repository is shared, and none of it is part of the
+# submission — committing it would publish machine-local settings and editor state.
+.claude/
+CLAUDE.md

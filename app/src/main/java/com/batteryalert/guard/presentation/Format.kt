@@ -34,3 +34,39 @@ fun Double?.formatDistance(): String = when {
 fun Double?.distanceUnit(): String = if (this != null && isFinite() && this >= 1_000.0) "km" else "m"
 
 fun Double?.formatCoordinate(decimals: Int = 5): String = format(decimals)
+
+/**
+ * A duration in minutes, rendered the way an operator says it out loud: "48 min", or
+ * "1 h 12 m" once it passes the hour. A decimal hour would be a mental conversion at
+ * exactly the moment the operator has no time for one.
+ */
+fun Double?.formatDuration(): String {
+    if (this == null || !isFinite() || this < 0.0) return UNKNOWN
+
+    val wholeMinutes = this.toInt()
+    val hours = wholeMinutes / 60
+    val minutes = wholeMinutes % 60
+
+    return if (hours == 0) "$wholeMinutes min" else "${hours}h ${minutes}m"
+}
+
+/**
+ * A duration in seconds, switched to minutes once seconds stop being readable. A 38-second
+ * trip home is a useful number; "0 min" is not.
+ */
+fun Double?.formatDurationSeconds(): String {
+    if (this == null || !isFinite() || this < 0.0) return UNKNOWN
+    return if (this < 90.0) {
+        String.format(Locale.US, "%.0f s", this)
+    } else {
+        (this / 60.0).formatDuration()
+    }
+}
+
+/** Signed millivolts, e.g. "+84 mV" — the unit ΔV is actually reasoned about in. */
+fun Double?.formatSignedMillivolts(): String {
+    if (this == null || !isFinite()) return UNKNOWN
+    val millivolts = this * 1_000.0
+    val sign = if (millivolts >= 0.0) "+" else "−"
+    return String.format(Locale.US, "%s%.0f mV", sign, kotlin.math.abs(millivolts))
+}

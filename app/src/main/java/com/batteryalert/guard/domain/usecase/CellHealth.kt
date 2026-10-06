@@ -22,10 +22,18 @@ data class CellStats(
  */
 object CellHealth {
 
-    private const val MIN_PLAUSIBLE_CELL_VOLTS = 0.5
+    /**
+     * The single definition of "this reading is a cell" for the whole app.
+     *
+     * MAVLink `BATTERY_STATUS` packets carry a fixed-length cell array, so a 6S pack in a
+     * 14-slot field arrives as six real voltages padded with zeros. Anything at or below
+     * this is padding or a dead channel, and every caller that counts, averages or charts
+     * cells filters on this one constant rather than inventing its own cutoff.
+     */
+    const val MIN_USABLE_CELL_VOLTS = 0.5
 
     fun stats(cellVoltages: List<Double>): CellStats? {
-        val usable = cellVoltages.filter { it.isFinite() && it > MIN_PLAUSIBLE_CELL_VOLTS }
+        val usable = cellVoltages.filter { it.isFinite() && it > MIN_USABLE_CELL_VOLTS }
         if (usable.isEmpty()) return null
 
         val min = usable.min()
@@ -41,4 +49,19 @@ object CellHealth {
 
     /** Cell delta in volts, or null when the pack does not report usable cells. */
     fun deltaVolts(cellVoltages: List<Double>): Double? = stats(cellVoltages)?.deltaVolts
+
+    /**
+     * 1-based position of the lowest usable cell, or null when no cells are reported.
+     *
+     * The alert engine needs this to name the failing cell, and the dashboard needs it to
+     * highlight the same one in the balance chart. Defined once here so the cell the alert
+     * names and the cell the chart marks can never disagree.
+     */
+    fun weakestCellNumber(cellVoltages: List<Double>): Int? =
+        cellVoltages
+            .withIndex()
+            .filter { it.value.isFinite() && it.value > MIN_USABLE_CELL_VOLTS }
+            .minByOrNull { it.value }
+            ?.index
+            ?.plus(1)
 }

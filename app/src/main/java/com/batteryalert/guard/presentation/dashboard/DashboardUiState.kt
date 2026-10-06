@@ -1,8 +1,13 @@
 package com.batteryalert.guard.presentation.dashboard
 
 import com.batteryalert.guard.domain.model.AlertLevel
+import com.batteryalert.guard.domain.model.AlertRule
+import com.batteryalert.guard.domain.model.BatteryAlert
 import com.batteryalert.guard.domain.model.ConnectionState
+import com.batteryalert.guard.domain.usecase.CellHealth
 import com.batteryalert.guard.domain.usecase.CellStats
+import com.batteryalert.guard.domain.usecase.ResolvedBatteryConfiguration
+import com.batteryalert.guard.domain.usecase.RtlAssessment
 
 /**
  * One immutable snapshot of everything the dashboard renders.
@@ -28,6 +33,18 @@ data class DashboardUiState(
     val cellVoltages: List<Double> = emptyList(),
     val cellStats: CellStats? = null,
 
+    // --- Phase 3: derived battery health -----------------------------------------
+    /** Per-cell voltages with load sag added back (FR 2.1). */
+    val restingCellVolts: List<Double> = emptyList(),
+    val sagPerCellVolts: Double? = null,
+    val restingPackVolts: Double? = null,
+    /** Cell count and chemistry, resolved from cell telemetry or a baseline sample. */
+    val batteryConfiguration: ResolvedBatteryConfiguration? = null,
+    /** Per-cell resistance the sag compensation was run with, so the figure is traceable. */
+    val internalResistanceOhmPerCell: Double = 0.0,
+    /** Rolling window of recent samples, for the trend charts. */
+    val history: TelemetryHistory = TelemetryHistory(),
+
     // Position / flight
     val gpsLocked: Boolean = false,
     val latitude: Double? = null,
@@ -37,21 +54,122 @@ data class DashboardUiState(
     val cruisingSpeedMps: Double? = null,
     val sprayingActive: Boolean = false,
 
-    // --- Populated from Phase 4 / Phase 5 onward ---------------------------------
-    /** Minimum battery % needed to get home plus the 15% safety margin. */
-    val requiredRtlBattery: Double? = null,
+    /**
+     * FR 5.1. The same pure decision the [SafetyCoordinator] sends to the pump, evaluated
+     * here so the dashboard cannot show an interlock state the interlock did not take.
+     */
+    val sprayInhibited: Boolean = false,
+    val sprayInhibitReason: String? = null,
+
+    // --- Phase 4 / Phase 5 ---------------------------------------------------------
+    /** Dynamic RTL requirement (FR 3.1). Null means no estimate could be made. */
+    val rtl: RtlAssessment? = null,
     val estimatedFlightMinutes: Double? = null,
-    val alertLevel: AlertLevel = AlertLevel.NORMAL,
-    val alertMessage: String? = null,
+
+    /**
+     * Every alert condition currently true, worst first.
+     *
+     * All of them, not only the worst one: the requirements give each alert its own
+     * indicator and action prompt, and a pack can be both imbalanced and low. [alertLevel]
+     * is the headline, but the rest are still the reason to land.
+     */
+    val alerts: List<BatteryAlert> = emptyList(),
 
     // Demo controls
     val demoScenarios: List<DemoScenarioOption> = emptyList(),
     val speedOptions: List<Double> = SPEED_OPTIONS,
     val speedMultiplier: Double = 1.0,
 ) {
+    /** Cell count to display, preferring the resolved configuration over the raw list. */
+    val cellCount: Int? get() = batteryConfiguration?.cellCount ?: cellVoltages.size.takeIf { it > 0 }
+
+    /** The headline level, derived so it cannot drift from [alerts]. */
+    val alertLevel: AlertLevel
+        get() = alerts.firstOrNull()?.level ?: AlertLevel.NORMAL
+
+    /** The alert the banner leads with, or null when nothing is wrong. */
+    val primaryAlert: BatteryAlert? get() = alerts.firstOrNull()
+
+    /**
+     * The worst active level among [rules], or [AlertLevel.NORMAL] when none of them fired.
+     *
+     * Cards use this instead of [alertLevel] so that a colour on a card is always about
+     * that card. An RTL Critical must not turn the cell-balance chart red — the operator
+     * would read that as a failing cell and land for the wrong reason.
+     */
+    fun levelFor(rules: Set<AlertRule>): AlertLevel =
+        alerts.filter { it.rule in rules }
+            .maxByOrNull { it.level.severity }
+            ?.level
+            ?: AlertLevel.NORMAL
+
+    /** Single-rule convenience for cards that answer to exactly one rule. */
+    fun levelFor(rule: AlertRule): AlertLevel = levelFor(setOf(rule))
+
+    /** 1-based position of the lowest usable cell, or null when no cells are reported. */
+    val weakestCellNumber: Int? get() = CellHealth.weakestCellNumber(cellVoltages)
+
     companion object {
         /** Demo playback rates, so a full drain can be shown in seconds rather than an hour. */
         val SPEED_OPTIONS = listOf(1.0, 5.0, 20.0, 60.0)
+    }
+}
+
+/**
+ * A fixed-length rolling window of recent telemetry.
+ *
+ * It lives in the UI state because the operator is the primary consumer: the trend charts
+ * are its reason to exist. The alert engine also reads it — through the pure
+ * `VoltageTrend` function, which is handed a copy and returns a number — so that "rapid
+ * sag" can be a measured rate rather than an assertion.
+ *
+ * The timestamps are wall-clock, not simulated time, because they are what the app would
+ * observe on a real serial link. Under demo acceleration that means the window spans the
+ * same number of *ticks* but a much larger span of simulated flight, which is the honest
+ * reading: an accelerated simulator is not evidence that a pack can sag that slowly.
+ */
+data class TelemetryHistory(
+    val measuredPackVolts: List<Float> = emptyList(),
+    val restingPackVolts: List<Float> = emptyList(),
+    val amps: List<Float> = emptyList(),
+    /** Wall-clock time of each sample, aligned with the three series above. */
+    val sampleTimestampsMillis: List<Long> = emptyList(),
+) {
+    fun append(
+        measuredPackVolts: Double?,
+        restingPackVolts: Double?,
+        amps: Double?,
+        nowMillis: Long,
+    ): TelemetryHistory {
+        // The timestamp is recorded only when the voltage sample it belongs to is, so the
+        // two series cannot drift out of alignment. VoltageTrend zips them, and a
+        // misalignment would silently disable rapid-sag detection for the rest of the
+        // session rather than fail loudly.
+        val recorded = measuredPackVolts != null && measuredPackVolts.isFinite()
+        return TelemetryHistory(
+            measuredPackVolts = this.measuredPackVolts.push(measuredPackVolts),
+            restingPackVolts = this.restingPackVolts.push(restingPackVolts),
+            amps = this.amps.push(amps),
+            sampleTimestampsMillis =
+                if (recorded) this.sampleTimestampsMillis.push(nowMillis)
+                else this.sampleTimestampsMillis,
+        )
+    }
+
+    private fun List<Float>.push(value: Double?): List<Float> {
+        if (value == null || !value.isFinite()) return this
+        val appended = this + value.toFloat()
+        return if (appended.size > WINDOW) appended.takeLast(WINDOW) else appended
+    }
+
+    private fun List<Long>.push(value: Long): List<Long> {
+        val appended = this + value
+        return if (appended.size > WINDOW) appended.takeLast(WINDOW) else appended
+    }
+
+    companion object {
+        /** ~2 minutes at the simulator's 1 Hz publish rate. */
+        const val WINDOW = 120
     }
 }
 
