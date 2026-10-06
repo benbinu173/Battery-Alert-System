@@ -4,17 +4,18 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.batteryalert.guard.presentation.dashboard.DashboardScreen
+import com.batteryalert.guard.presentation.GuardApp
 import com.batteryalert.guard.presentation.theme.BatteryAlertTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 /**
- * The app has exactly one screen. Keeping the Activity this thin is the point: it hosts
- * Compose and nothing else, so no telemetry or safety logic can accumulate here.
+ * The Activity hosts Compose and nothing else. Keeping it this thin is the point: no
+ * telemetry, safety or storage logic can accumulate here, and the two screens are chosen in
+ * [GuardApp] rather than in the manifest.
  *
- * [AndroidEntryPoint] is not optional. `hiltViewModel()` inside `DashboardScreen` builds
- * its factory from this Activity, and without the annotation Hilt's generated component
- * does not exist, so the very first composition throws.
+ * [AndroidEntryPoint] is not optional. `hiltViewModel()` inside [GuardApp] builds its
+ * factory from this Activity, and without the annotation Hilt's generated component does
+ * not exist, so the very first composition throws.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -24,7 +25,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             BatteryAlertTheme {
-                DashboardScreen()
+                GuardApp()
             }
         }
     }

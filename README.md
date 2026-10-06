@@ -7,14 +7,20 @@ The app watches a UAV flight battery in real time, computes cell health and a dy
 return-to-launch threshold, and warns the operator before the pack becomes the reason the
 aircraft does not come home.
 
-> **Status — Phase 6 of 10.** The architecture, telemetry boundary, simulator and live
-> dashboard are running, the battery-health calculations (voltage-sag compensation,
-> discharge rate, remaining flight time, cell statistics, pack-configuration detection)
-> are implemented and unit-tested, the **dynamic RTL requirement (FR 3.1)** is computed
-> and displayed, the **alert engine (the full alert matrix)** drives the dashboard's
-> colour, banner and action prompts, and the alerts now **speak, vibrate and hold the
-> spray interlock** (FR 5.1–5.3). Blackbox logging and the MAVLink/serial source are
-> **not implemented yet** — see [Roadmap](#roadmap).
+> **Status — Phase 10 of 10.** Everything in the build plan is implemented and unit-tested:
+> the architecture, the telemetry boundary, the simulator, the live dashboard, the
+> battery-health calculations (voltage-sag compensation, discharge rate, remaining flight
+> time, cell statistics, pack-configuration detection), the **dynamic RTL requirement
+> (FR 3.1)**, the **alert engine (the full alert matrix)**, the **spoken, haptic and spray
+> interlock behaviour (FR 5.1–5.3)**, the **blackbox recorder (FR 5.3)**, and a **MAVLink
+> v1/v2 decoder** that turns real telemetry bytes into the same domain objects the simulator
+> produces — including `HOME_POSITION`, so FR 3.1's dynamic RTL now has a real home distance
+> to work from.
+>
+> **One thing is written but not verified.** The USB-UART transport that would feed the
+> decoder from an actual aircraft exists, compiles, and has never been run — verifying it
+> needs the aircraft. The app still ships bound to the simulator, and
+> [Reading real MAVLink](#reading-real-mavlink) says exactly what that leaves untested.
 
 ---
 
@@ -53,19 +59,62 @@ aircraft does not come home.
 - **The spray interlock** (FR 5.1) — spraying is inhibited at or below 20%, the dashboard
   reports the interlock state rather than offering a control, and the pump itself sits
   behind a `SprayController` interface because the requirements never define one.
-- 132 unit tests over the pure calculation layer, the state object and the safety policy.
+- **A blackbox flight recorder** (FR 5.3) — battery, current, temperature, cell health and
+  GPS written to a local Room database, at a 1 Hz heartbeat that goes to full resolution
+  the moment the alert level changes or the link drops. The **Flight recorder** screen
+  reads it back: a summary of one flight above the raw rows, with the reason each row was
+  kept.
+- **A MAVLink decoder** (FR 1.1–1.2) — a resynchronising stream parser for MAVLink v1 and
+  v2, checksummed with MAVLink's own CRC and decoding `HEARTBEAT`, `SYS_STATUS`,
+  `GLOBAL_POSITION_INT`, `HOME_POSITION`, `VFR_HUD` and `BATTERY_STATUS` into the same
+  domain objects the simulator produces. The wire itself sits behind a `TelemetryTransport`
+  seam; see [Reading real MAVLink](#reading-real-mavlink).
+- **Home distance and a real dynamic RTL** (FR 3.1) — `HOME_POSITION` is latched when it
+  arrives and outlives the message that carried it, the distance to it is computed by a
+  haversine (`GeoDistance`, unit-tested against known city pairs and the antimeridian), and
+  the RTL requirement is then assessed from a real distance rather than from the simulator's
+  fiction.
+- **A pack-capacity configuration point** — FR 3.1's missing input, resolved. `PackCapacity`
+  takes the charge left from whichever source has it: a reported measurement if the autopilot
+  sends one, otherwise the configured capacity times the state of charge. The **Aircraft**
+  screen sets it, validates it against a plausible range rather than clamping it, and then
+  reports live whether the figure it just accepted is the one the dashboard is using.
+- **A link that recovers** — the serial source watches its own wire, reopens a port that
+  drops, backs off while it cannot, and reports `RECONNECTING` on the dashboard rather than
+  going quiet. `LinkHealthSource` is a separate seam so the simulator, which has no wire, is
+  not made to answer a question it has no answer to.
+- **A USB-UART transport** — `UsbSerialTransport`, behind the same `TelemetryTransport`
+  interface the simulator's fake uses: adapter enumeration, the Android USB permission
+  dialog, 8N1 at MAVLink's conventional 57600 baud, and the library's reader bridged into a
+  `Flow<ByteArray>`. **Written, compiling, never run.** See
+  [What this does not do](#what-this-does-not-do).
+- **282 unit tests** over the pure calculation layer, the presentation state, the safety and
+  recording policies, the serial source's own state machine, and the MAVLink decoder.
 
 ## What is deliberately not claimed
 
 - **No live aircraft is being monitored.** Every number on screen comes from the on-device
   simulator. The dashboard says so, on screen, permanently.
-- **No serial or MAVLink connection exists yet.** The `TelemetryDataSource` boundary is in
-  place, but only the mock implementation is bound.
+- **Nothing is plugged into an aircraft.** A MAVLink decoder exists and is unit-tested
+  against synthetic frames, and the USB-UART transport that would feed it is written — but
+  it has never been run against real hardware, because that needs the aircraft. The
+  simulator is still the source that is bound. Everything described in
+  [Reading real MAVLink](#reading-real-mavlink) has run only in tests.
+- **The USB transport compiles and that is all that is known about it.** It is the one
+  class in this repository whose correctness rests on nothing but review. Its failure mode
+  is deliberately legible rather than plausible: a link that cannot open shows **Link
+  error** and a diagnostics screen with zero frames decoded, not a dashboard full of
+  numbers that happen to be wrong.
+- **The MAVLink dialect constants are unverified.** The per-message CRC extras and field
+  offsets were written without access to the vehicle's generated headers, and a wrong one
+  looks exactly like a dead link rather than like a wrong number. They ship as seeds the
+  parser corrects at runtime, not as values anyone has confirmed against the aircraft.
 - **No pump control.** The spray interlock is specified as an abstraction only, because the
   physical pump protocol is not defined anywhere in the requirements. `NoOpSprayController`
   is bound, so the interlock *decision* is real and the wire format is not invented.
-- **No blackbox log yet.** The alerts are announced and the interlock is held, but the
-  GPS-mapped battery history the requirements ask for is written to nothing until Phase 7.
+- **No export or cloud upload.** The blackbox is on-device and bounded; FR 5.3 asks for the
+  log to exist, not for it to leave the aircraft. Getting it off the device is a reported
+  gap, not a hidden one.
 
 ---
 
@@ -74,9 +123,14 @@ aircraft does not come home.
 ```
 Skydroid GR01 / /dev/ttySx          MockTelemetryDataSource
             |                                  |
+     TelemetryTransport                        |
+     the only hardware-specific code            |
+            |                                  |
+  SerialTelemetryDataSource                    |
+            |                                  |
             +-------------+--------------------+
                           |
-                  TelemetryDataSource            <- the only hardware boundary
+                  TelemetryDataSource            <- the only telemetry boundary
                           |
               Telemetry Repository / ViewModel
                           |
@@ -95,14 +149,20 @@ Health   Calculator   Engine      Time       Health
                                       |
                     TTS / Vibration / Spray Interlock
                           |
-                  Blackbox Logger -> Room
+                   BlackboxRecorder -> Room
 ```
 
-The two branches matter. The dashboard consumes state; `SafetyCoordinator` consumes the same
-frames and produces *effects*. Keeping them separate is what lets the dashboard be
-recomposed, rotated or recreated without the app repeating an announcement — and it is what
-would let the safety layer move into a foreground service later without touching the alert
-engine at all.
+The two branches matter. The dashboard consumes state; `SafetyCoordinator` and
+`BlackboxRecorder` consume the same frames and produce *effects*. Keeping them separate is
+what lets the dashboard be recomposed, rotated or recreated without the app repeating an
+announcement — and it is what would let the safety layer move into a foreground service
+later without touching the alert engine at all.
+
+Both effect branches hang off the pipeline upstream of `stateIn`, and the dashboard's state
+is collected in `GuardApp` rather than inside the dashboard. That pairing is deliberate: a
+`WhileSubscribed` pipeline whose only collector was the dashboard would stop the telemetry —
+and therefore the recorder and the alarms — the moment the operator opened the flight
+recorder to read it.
 
 The rule the whole design hangs on: **the UI never computes a safety number.** Every value
 in `DashboardUiState` is produced by the domain layer; Compose only formats and lays it out.
@@ -112,12 +172,18 @@ There is no threshold anywhere in the `presentation` package.
 
 | Package | Responsibility |
 | --- | --- |
-| `data/telemetry` | `TelemetryDataSource` boundary, the mock simulator, and (later) the serial/MAVLink source |
-| `domain/model` | `BatteryTelemetry`, `GpsData`, `FlightState`, `ConnectionState`, `AlertLevel`, `BatteryAlert`, `BatteryConfiguration` |
-| `domain/usecase` | Pure calculations: `CellHealth`, `VoltageSag`, `FlightTime`, `RtlCalculator`, `VoltageTrend`, `AlertEngine`, `SprayInterlock`, `BatteryConfigurationDetector`, `BatteryConfigurationResolver` |
-| `di` | Hilt bindings — the two places hardware is chosen: what the app listens to, and what it acts through |
+| `data/telemetry` | `TelemetryDataSource` boundary, the mock simulator, the serial source and its reconnect loop, `LinkHealthSource`, and the `TelemetryTransport` hardware seam with its USB-UART implementation |
+| `data/telemetry/mavlink` | Framing, checksums, the self-correcting dialect table, and the message decoders |
+| `data/aircraft` | `AircraftProfileStore` — the per-airframe settings the telemetry cannot supply, currently the pack capacity |
+| `domain/model` | `BatteryTelemetry`, `GpsData`, `FlightState`, `ConnectionState`, `AlertLevel`, `BatteryAlert`, `BatteryConfiguration`, `BlackboxRecord` |
+| `domain/usecase` | Pure calculations: `CellHealth`, `VoltageSag`, `FlightTime`, `GeoDistance`, `PackCapacity`, `RtlCalculator`, `VoltageTrend`, `AlertEngine`, `SprayInterlock`, `BlackboxSampler`, `BlackboxAnalysis`, `BatteryConfigurationDetector`, `BatteryConfigurationResolver` |
+| `data/database` | Room entity, DAO and database for the blackbox |
+| `data/repository` | `BlackboxRepository` and the `BlackboxRecorder` that decides and writes |
+| `di` | Hilt bindings — the places a boundary is chosen: what the app listens to, what it acts through, where it stores, and where it runs |
 | `safety` | The side effects of an alert: `SafetyCoordinator`, `AnnouncementPolicy`, and the TTS / haptic / spray boundaries |
 | `presentation/dashboard` | `DashboardScreen`, `DashboardViewModel`, `DashboardUiState` |
+| `presentation/aircraft` | The airframe screen: `AircraftScreen`, `AircraftViewModel`, `AircraftUiState` |
+| `presentation/diagnostics` | The flight recorder screen: `DiagnosticsScreen`, `DiagnosticsViewModel`, `DiagnosticsUiState` |
 | `presentation/components` | Dashboard primitives, and the Canvas-drawn gauge, balance chart and sparklines |
 | `presentation/theme` | Dark operator palette; semantic colours reserved for the alert engine |
 
@@ -209,22 +275,245 @@ it is covered by a test that says so.
 
 ---
 
+## The flight recorder
+
+FR 5.3 asks for battery, current and temperature to be logged against GPS. The interesting
+decisions are not *what* to write but *when*, and *without slowing the aircraft down*.
+
+**Why a plain timer would be the wrong answer.** A recorder that writes every frame is a
+disk-filler — a 10 Hz link over a 40-minute flight is 24,000 rows describing a pack that did
+not change. A recorder on a fixed timer is worse, because the timer is guaranteed to be
+wrong exactly where it matters: the row that explains the incident is the one that lands
+between two ticks. So `BlackboxSampler` is a hybrid, and the priority order is the design:
+
+| Priority | Trigger | Why |
+| --- | --- | --- |
+| 1 | `SESSION_START` | A log that does not begin is not a log |
+| 2 | `ALERT_CHANGE` | The row the feature exists for. Recorded whatever the cadence |
+| 3 | `LINK_CHANGE` | "The log stops here" and "the link dropped here" must not look the same |
+| 4 | `HIGH_RESOLUTION` | At a cell fault and above, every frame is kept |
+| 5 | `CADENCE` | The 1 Hz heartbeat that makes the quiet parts legible |
+
+The trigger is stored on each row rather than inferred, because it is the one thing the
+numbers cannot supply. A dense cluster of rows in the diagnostic view says that something
+happened; the `Why` column says *what*.
+
+**The cadence is not tied to the frame rate.** The simulator publishes at 1 Hz and the
+default cadence is 1 s, so rules 2–4 look redundant today. They are not, and they must not
+be deleted when a real link is bound: MAVLink telemetry arrives at 10–50 Hz, and a one-second
+cadence would then be dropping nine frames in ten at the worst possible moment.
+
+**The write path never blocks the alert path.** `BlackboxRecorder.offer` decides and queues;
+a single IO coroutine drains. An alert three hundred milliseconds late because SQLite was
+busy is a safety regression caused by an audit feature. A single consumer rather than a
+`launch` per row, because a blackbox whose rows are not in the order the aircraft lived them
+cannot be read as a timeline.
+
+**It says when it loses rows.** If the queue ever fills, the *oldest* queued row is dropped —
+the rows nearest an event matter most — and the count is reported on the recorder screen. A
+recorder that silently loses rows is worse than one that admits it: the first makes a gap in
+the log look like a gap in the flight.
+
+**The log is a bounded rolling buffer, not an archive.** Past 20,000 rows — a little over
+five hours at the heartbeat rate — the oldest are discarded, and a device left running for a
+weekend cannot exhaust its storage. The database is created with
+`fallbackToDestructiveMigration`, because it is diagnostic telemetry rather than user data
+and recreating it costs a few hours of log, not a migration nobody will read.
+
+**Unknown stays unknown through SQLite.** Every nullable column round-trips as null, so "the
+link did not report a temperature" survives as unknown rather than arriving back as 0 °C —
+the same convention the rest of the codebase uses, applied to storage.
+
+---
+
+## Reading real MAVLink
+
+Bytes from a serial link become the same `BatteryTelemetry`, `GpsData` and `FlightState`
+objects the dashboard already consumes, through the same `TelemetryDataSource` boundary —
+which means the alert engine, the RTL calculation, the interlock and the recorder all run on
+the new source without knowing it is new.
+
+The pipe itself is the one piece that needs the aircraft, and it is behind
+`TelemetryTransport`: open, a flow of byte chunks, close. That single interface is what keeps
+everything above it testable on the JVM — the parser, the checksums, the decoders and the
+link's reconnect loop are all driven in unit tests by synthetic frames, with a fake transport
+pumping bytes.
+
+### The transport that has never been run
+
+`UsbSerialTransport` is the implementation of that interface over a real adapter, and it is
+the one class in this repository whose correctness rests on nothing but review. It enumerates
+attached USB-UART bridges through the driver library's prober rather than matching a
+particular VID/PID, raises Android's per-device USB permission dialog, opens the first port at
+8N1 / 57600, and bridges the library's reader thread into a `Flow<ByteArray>`.
+
+Three things about it are worth saying plainly rather than leaving for the reader to notice:
+
+**It is deliberately narrow.** It knows nothing about MAVLink — no frame, no checksum, no
+message id appears in it. That is what keeps it replaceable and what keeps the untested
+surface down to one file: everything that could be wrong in an *interesting* way is on the
+tested side of the seam.
+
+**Its failure mode is legible.** If the adapter does not enumerate, or the permission is
+refused, or the port will not open, `open()` throws and the dashboard says **Link error** with
+zero frames decoded on the diagnostics screen. The dangerous alternative — a transport that
+half-works and yields plausible numbers — is not available, because a port that is not
+receiving produces no bytes rather than wrong ones.
+
+**It does not transmit.** The link is receive-only. Most MAVLink links will not stream
+telemetry until the ground station requests a data stream, so if this is ever run against the
+aircraft and the dashboard connects but sits at zero frames, that request is the first thing
+to look at — not this class. It is not added here because the requirements describe an alert
+system reading a link that already carries traffic, and a ground station that begins
+commanding an aircraft it cannot yet see is a much larger claim than this submission is
+making.
+
+There is no `ACTION_USB_DEVICE_ATTACHED` receiver either, and that is a decision rather than
+an omission: the retry loop already reopens a port on every attempt, so plugging the radio in
+while the app is running recovers on its own, and a receiver would be a second mechanism
+duplicating the first — with a lifecycle to leak, in exchange for nothing.
+
+### The constants that could not be checked
+
+MAVLink frames are checksummed, and the checksum folds in a per-message byte called the CRC
+extra that never appears on the wire. Getting one wrong does not produce a wrong number; it
+produces a frame that fails its checksum, which is indistinguishable from a link that is
+dead. The extras this app needs were written from memory and **were not verified against
+the vehicle's generated headers.**
+
+So they ship as *seeds*, and the parser treats them that way. When a supported message fails
+its checksum, `MavlinkCrc.recoverExtra` searches all 256 possible values and finds the one —
+at most one — that explains the frame. Three identical recoveries in a row for the same
+message id and the table corrects itself, so a wrong constant costs a few frames rather than
+the whole flight. The search is exact rather than a heuristic: the fold that mixes the extra
+into the checksum is injective, which is what makes "at most one" a proof rather than a hope.
+
+What the correction is *not* is an acceptance path. Roughly one corrupt frame in 256 will
+have some byte that explains it, so a frame is only ever decoded against a constant the
+dialect already holds; a recovery is evidence about the dialect and never a licence to decode
+the frame that produced it. And the divergence is reported the first time it is seen, not
+the third, in `LinkHealth.dialectCorrections` — the value to fold back into
+`MavlinkMessageSpec` before this ships to anyone with an aircraft.
+
+### Two definitions of one message
+
+`BATTERY_STATUS` has been redefined at least once, and the two definitions put the cell
+voltages in different places. Nothing inside a frame says which definition built it.
+`BatteryStatusLayout` makes that a named configuration point — an enum, not an offset table
+buried in a decoder — which is what the brief's "keep it behind an abstraction or
+configuration point" instruction asks for.
+
+A wrong guess here would be dangerous rather than merely wrong: it would produce plausible
+cell voltages out of the wrong bytes, and FR 2.2's ΔV > 0.08 V rule would then be checking
+numbers that mean nothing while looking perfectly healthy. So the cells are never trusted on
+their own. They are summed and compared against `SYS_STATUS`'s independent pack measurement;
+if the total disagrees, or if any cell falls outside 2.0–5.0 V, the per-cell data is withheld
+from the alert engine entirely — and if the *other* layout would have fitted, it is named in
+`suspectedLayout`. A layout error therefore surfaces as missing cell data with the fix
+printed beside it, rather than as an imbalance alert that never fires.
+
+There is a second trap in the same message: a 12S pack does not fit the ten-element
+`voltages` array, and the last two cells live in a separate overflow array. A decoder reading
+only the first array would report ten of twelve cells and stop checking the other two for
+imbalance — silently, and exactly where a 12S pack is most likely to drift. Both arrays are
+read. The test builder that found this derives every offset from each message's MAVLink
+schema rather than from hardcoded numbers, so it disagrees with the decoder the moment either
+is wrong; it caught a real misplacement of `time_remaining` the same way.
+
+### Two answers for one battery
+
+`SYS_STATUS` and `BATTERY_STATUS` both report pack voltage and current, and on a real
+aircraft they disagree by a few hundred millivolts. The app uses the flight controller's own
+measurement, on the grounds that it is the one the autopilot's own failsafes are armed on —
+an app that disagrees with the aircraft about the pack is an app that will one day be ignored
+at the wrong moment. Cells, percentage and temperature come from `BATTERY_STATUS`, which is
+the only message carrying them.
+
+### A link that is up while a message is not
+
+Two watches answer two different questions. The link watchdog asks whether *anything* is
+arriving; the assembler times each message type separately, because a link that is up while
+one message type has stopped arriving is quieter and more dangerous than a link that has
+dropped — the dashboard would go on showing the last good voltage forever while everything
+else stayed live, and there is nothing on screen to suggest the number is old.
+
+When the link itself goes silent the readings are dropped outright rather than left to expire
+on their own timers. Those windows are deliberately longer than the silence window, so
+without this there is a gap in which a live-looking voltage sits next to an ERROR badge.
+
+### A link that comes back
+
+A USB cable works loose. The transport's flow ends, and the question is what the app does in
+the next second — because the alternatives are both bad in different ways: give up and the
+operator has to restart the app mid-flight, or retry instantly and burn the battery on an
+adapter that is not there.
+
+So the source has a third state. `RECONNECTING` is on the dashboard, distinct from both
+`CONNECTED` and `ERROR`, because "the link is trying" and "the link has failed" call for
+different actions from the operator. The retry loop backs off rather than spinning, and the
+backoff is a constructor parameter so the tests drive it in milliseconds rather than by
+waiting.
+
+Two details in there are deliberate:
+
+**The reconnect reuses the same watchdog, with the readings cleared.** A link that is being
+re-established is not a link that is delivering numbers, and a stale voltage left on screen
+under a `RECONNECTING` badge is exactly the failure this whole file is about.
+
+**The transport releases before it reopens.** `UsbSerialTransport.open()` closes whatever it
+is still holding before it acquires anything, because nothing else in the path calls `close()`
+between a drop and the retry — the retry loop's whole job is to reopen. A `UsbDeviceConnection`
+that is reopened without being closed does not fail cleanly; it leaks a file descriptor that
+survives the app being backgrounded. Putting the release inside `open()` is the same argument
+as putting it in a `finally`: the class that owns the resource is the one that should not need
+reminding.
+
+### What this does not do
+
+- **The serial source is not bound.** `TelemetryModule` still binds the simulator, because
+  binding a serial source whose transport has never run would trade a working demo for an
+  empty dashboard. Switching is four edits, all in that one file, and they are named in its
+  KDoc. Nothing in the domain or presentation layers moves for any of them.
+- **The spray interlock's pump input is unknown.** No supported message says whether a pump
+  is running, so `sprayingActive` has no source and the interlock fails safe. That is a
+  property of the requirements, not of this code: FR 5.1 specifies the interlock's behaviour
+  and never defines a pump interface.
+- **Dynamic RTL over a real link still needs one setting.** `HOME_POSITION` closed the
+  distance half of FR 3.1 — but the other half is the pack's capacity in mAh, and no
+  supported message reports it. `PackCapacity` resolves that where it can: a source that
+  reports the charge left directly needs no configuration, and otherwise the **Aircraft**
+  screen supplies the capacity and the state of charge does the rest. So on a real aircraft
+  the RTL threshold is **unknown until someone enters the pack size**, and the dashboard
+  says so rather than showing a zero. That is the honest shape of the requirement: FR 3.1's
+  formula has an input the telemetry does not carry, and the answer is a configuration
+  point, not a guessed number.
+
+The gaps that were listed here before have closed and are worth recording as closed, because
+each was pinned by a test that would now fail if it reopened: `HOME_POSITION` is decoded,
+home is latched so it outlives the message that carried it, the distance to it is a tested
+haversine, and the pack capacity that FR 3.1 was missing is a setting with a plausible-range
+guard rather than a constant.
+
+---
+
 ## Tests
 
 ```bash
 ./gradlew test
 ```
 
-132 unit tests cover the pure calculation layer, the presentation state and the safety
-policy — sag
+282 unit tests cover the pure calculation layer, the presentation state, the safety policy,
+the recorder, the serial source's own state machine and the MAVLink decoder — sag
 compensation and its sign convention under charge, the mAh/min conversion, the guards that
 stop a parked aircraft producing an infinite flight time, ΔV across the 0.08 V fault
 threshold, zero-padded cell packets, chemistry detection including the cases where it must
 refuse to answer, configuration resolution from cell telemetry versus baseline voltage, the
 RTL requirement including its behaviour when the aircraft is hovering or the GPS distance
-is unknown, the fitted voltage-decline rate, every rule and boundary in the alert
-matrix, and the announcement and interlock rules including their escalations and their
-unknown-charge case.
+is unknown, the distance to home across the antimeridian, a pack capacity that refuses to be
+guessed, the fitted voltage-decline rate, every rule and boundary in the alert
+matrix, the announcement and interlock rules including their escalations and their
+unknown-charge case, the link's recovery from a dropped port, and the recorder's decision
+table and the summary it is read back through.
 
 The RTL and alert tests use the same numbers as the demo scenarios, so retuning the
 simulator to a state its scenario is not named for fails a test rather than quietly
@@ -246,9 +535,71 @@ A few are worth calling out because they guard presentation rather than arithmet
 - **`an unknown charge inhibits`** pins the one deliberate inversion of the null convention,
   so it cannot be "tidied up" into consistency later by someone reading only the other use
   cases.
+- **`the cadence is measured from the last kept frame, not the last seen one`** feeds the
+  sampler frames it declines to keep and then asserts the heartbeat still fires. If a
+  skipped frame advanced the clock, the log would go quiet after its first second and
+  nothing else in the suite would notice.
+- **`a clock that steps backwards does not stop the log`** corrects the device's clock
+  mid-flight and asserts logging continues. Without the guard, an NTP sync would silence the
+  rest of the flight.
+- **`a field no row reported summarises as unknown, not as zero`** is the null convention
+  crossing a database boundary, which is where it is easiest to lose.
 
-The tests run on the JVM, which is why the calculation layer and the state object were kept
-free of Android dependencies.
+The MAVLink tests are the largest block, and the ones worth reading are the adversarial
+ones — they are written to fail if a safety property is ever traded away for a passing
+frame count:
+
+- **`chains to the published CRC catalogue value`** pins the checksum to the CRC-16/MCRF4XX
+  reference value for `"123456789"`. Without an external pin, a reversed polynomial would
+  still agree with itself in a round-trip test, and every other test in the file would pass
+  against a checksum that no aircraft emits.
+- **`a corrupt frame is never handed on`** flips a payload byte and asserts nothing comes
+  out. The dialect recovery is deliberately off the acceptance path, and this is the test
+  that fails if it ever creeps back on.
+- **`the link recovers on its own when bytes start again`** and its companion **`a single
+  corrupt frame does not rewrite the dialect`** are the two halves of the self-correction
+  rule. About one corrupt frame in 256 can be explained by some extra, so one sighting must
+  never be enough.
+- **`a twelve cell pack reports all twelve cells`** covers the overflow array. Reading only
+  the ten-element array would leave the last two cells of a 12S pack unchecked, silently.
+- **`a legacy payload read as extended is caught and the other layout is named`** feeds the
+  assembler a frame built for the other `BATTERY_STATUS` definition and asserts that the
+  cells are withheld and `LEGACY` is suggested as the fix.
+- **`a silent link is reported as an error and its readings are dropped`** advances an
+  injected clock past the silence window and asserts the published voltage becomes unknown.
+  A frozen reading beside an ERROR badge is precisely the failure it guards, and it is the
+  reason the link's clock is injected rather than read.
+
+The phases that closed the last two requirement gaps added tests that are written to fail if
+the gap quietly reopens:
+
+- **`one degree of longitude loses half its length by sixty north`** pins the haversine
+  against a missing `cos`. Without it, every distance at high latitude would be overstated by
+  up to a factor of two — and the RTL threshold derived from it would be wrong in the
+  direction that leaves the aircraft short.
+- **`a distance across the date line goes the short way round`** is the one that catches a
+  longitude subtraction that forgot to wrap. The bug is invisible anywhere except the Pacific,
+  and it produces a distance of most of the planet.
+- **`the home point outlives the message that carried it`** advances the clock well past the
+  position-staleness window and asserts the home distance is still known. `HOME_POSITION`
+  arrives once; a home that expired with it would take the RTL assessment with it a few
+  seconds into every flight.
+- **`a home reported as zeroes does not move the aircraft to the atlantic`** feeds the
+  assembler a home point of 0,0, which is what an autopilot that has not been given one
+  sends. Taken at face value it is a position, and the RTL requirement computed from it would
+  be enormous and entirely invented.
+- **`a configured capacity makes the rtl rate independent of the state of charge`** is the
+  property that makes the setting worth having: with a capacity known, the percent-per-second
+  rate is the same at 95% as at 50%. The derivation that avoided needing a capacity only
+  works while the charge is reported, and this is the test that says the two routes agree.
+- **`a capacity that is not a drone pack is refused at both ends`** (with
+  `the plausible range has endpoints that are themselves plausible`) pins the decision to
+  reject rather than clamp. Clamping a mistyped capacity would silently produce a flight time
+  that looks reasonable, which is worse than refusing the input.
+
+The tests run on the JVM, which is why the calculation layer, the state object and the whole
+MAVLink path were kept free of Android dependencies. The one exception is the transport,
+which is why it is an interface.
 
 ---
 
@@ -269,8 +620,17 @@ to Java 22 — so if you downgrade the wrapper, point `JAVA_HOME` at a matching 
 Or simply open the project root in Android Studio and press Run. On first sync Android
 Studio will prompt to accept the SDK licences and install platform 34 if it is missing.
 
+One dependency resolves through **JitPack** rather than Maven Central: `usb-serial-for-android`,
+the driver library behind `UsbSerialTransport`. It is the only artifact that comes from there,
+and `settings.gradle.kts` scopes the repository to that one group so nothing else can. It is
+pinned at 3.7.0 — the last release published as plain Java, for reasons set out in
+`libs.versions.toml`. If JitPack is unreachable the build fails at dependency resolution with
+the coordinate named, rather than somewhere confusing later.
+
 **Target device:** Skydroid G20 (Android 13). The dashboard also runs on a standard phone
-or tablet emulator, which is how it is developed and demonstrated.
+or tablet emulator, which is how it is developed and demonstrated. `android.hardware.usb.host`
+is declared as *not required*, so the demo installs and runs anywhere; a device without it
+gets the simulator and a transport that reports no adapter.
 
 ---
 
@@ -305,6 +665,30 @@ interlock engaging, and it is reported, not offered as a control.
 
 Volume up. There is nothing to configure.
 
+The **Flight recorder** button in the top bar opens the log. Leave it running for a minute
+and the summary card fills in: the worst level the flight reached, the rules that fired in
+the order the flight met them, the lowest pack and weakest cell, peak current and
+temperature, and how far from home it got. The table underneath shows the rows themselves,
+with the `Why` column naming the reason each one was kept — `session`, `alert`, `link`,
+`detail`, or `tick` for the ordinary heartbeat. Rows that exist for a reason are tinted;
+heartbeat rows are not.
+
+The `link` rows are the point of the column. Lose the telemetry and the log says so in
+words, at the instant it happened, rather than leaving a silent gap that reads like a quiet
+moment in the flight.
+
+The **Aircraft** button opens the airframe settings — one screen, one setting. Enter the
+pack's capacity in mAh and save; the card underneath then reports, live, whether that number
+is actually the one the dashboard is using. That is deliberate: a settings screen that
+accepted a value and said nothing else would let a mistyped capacity sit there looking
+configured while the RTL threshold was computed from something else. The demo simulator
+reports the charge left directly, so on demo mode the card says so and the capacity is
+unused — which is the same code path a real autopilot takes when it reports it, and the
+reason `PackCapacity` prefers a measurement to arithmetic wherever there is one.
+
+Nothing on that screen is a threshold. It is a number the telemetry does not carry, so
+someone has to supply it, and the screen's job is to make clear whether it did.
+
 ---
 
 ## Roadmap
@@ -317,10 +701,10 @@ Volume up. There is nothing to configure.
 | 4 | Dynamic RTL engine with 15% safety margin | **Done** |
 | 5 | Alert engine — Notice / Warning / Critical / Emergency / Cell Fault | **Done** |
 | 6 | TTS, vibration, spray interlock abstraction | **Done** |
-| 7 | Room blackbox logging and diagnostic view | Pending |
-| 8 | MAVLink parser and serial telemetry source | Pending |
-| 9 | Error handling and parser tests | Pending |
-| 10 | Final polish, APK, on-device test | Pending |
+| 7 | Room blackbox logging and diagnostic view | **Done** |
+| 8 | MAVLink parser and serial telemetry source | **Done** |
+| 9 | Error handling and parser tests | **Done** — reconnect loop, link watchdog, `LinkHealthSource`, and the `HOME_POSITION` / pack-capacity gaps closed |
+| 10 | Final polish, APK, on-device test | **Written, not verified** — the USB-UART transport compiles; running it needs the aircraft |
 
 ---
 
@@ -345,13 +729,16 @@ configurable or explicitly-unknown point rather than an invented value:
 
 1. **The RTL formula has a missing input.** FR 3.1 gives `Required(%) = (Discharge Rate
    %/sec x time-to-home) + 15%`. A rate in *percent* per second needs to know what
-   percentage is a percentage **of** — and neither the telemetry nor the chemistry gives
-   the pack's capacity in mAh. Assuming a pack size would be silently wrong on every
-   airframe but one. Instead the capacity is derived from two quantities the source already
-   reports (`remainingCapacityMah` and `batteryPercentage`), which cancels the capacity out
-   of the formula entirely — see `RtlCalculator`. Its limit is stated in the code: the
-   derivation divides by state of charge, so below 5% the assessment is withheld rather
-   than reported with false precision.
+   percentage is a percentage **of** — and no supported MAVLink message reports the pack's
+   capacity in mAh. Assuming a pack size would be silently wrong on every airframe but one.
+   So the capacity is resolved rather than assumed, in that order: a source that reports the
+   charge left directly is believed, because that is a measurement; otherwise the capacity
+   is read from the **Aircraft** screen and multiplied by the state of charge. When neither
+   is available the answer is null, not a guess — the same convention as everywhere else.
+   The earlier derivation, which cancelled the capacity out of the formula entirely by
+   dividing two quantities the source already reported, is still what runs in demo mode; its
+   limit is stated in the code, that it divides by state of charge, so below 5% the
+   assessment is withheld rather than reported with false precision.
 2. **Return speed is unspecified.** "Time to home" needs a speed the aircraft has not been
    given. The current cruise speed is used when it is usable, and a conservative default
    otherwise — including while hovering, where dividing by ground speed would give an
@@ -404,3 +791,18 @@ named, configurable parameter rather than a magic number buried in the logic:
   `AndroidHapticChannel`, with severity encoded in both rhythm and amplitude, because the
   requirements ask for vibration without saying what a Notice should feel like or how it
   should differ from an Emergency.
+
+FR 5.3 has the same problem in a quieter form, and the recorder makes the same kind of
+bargain:
+
+- **The logging rate is not specified.** "Blackbox logging" names the data and not the
+  cadence, so one is chosen — 1 Hz, going to full resolution on an alert change or a link
+  change — and it lives as `BlackboxSampler.DEFAULT_CADENCE_MILLIS` beside its reasoning
+  rather than as a literal in the recording path.
+- **Retention is not specified.** Nothing says how long a log should be kept, and an
+  unbounded one is a monitoring app that eventually fills the device and becomes the fault.
+  20,000 rows is a rolling buffer of a little over five hours, and the screen states the cap
+  and the current count rather than hiding the truncation.
+- **Getting the log off the device is not specified either.** Nothing is implemented for it.
+  That is a reported gap rather than an implied feature: the flight recorder screen shows
+  the log, and there is no export control that does not do anything.

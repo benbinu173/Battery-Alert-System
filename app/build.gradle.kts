@@ -71,6 +71,14 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
 
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // The USB-UART transport. Compiled into every build, but not *bound* to anything until
+    // TelemetryModule is switched over — see that file for the four edits.
+    implementation(libs.usb.serial)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }

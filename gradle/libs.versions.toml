@@ -10,6 +10,15 @@ coreKtx = "1.13.1"
 lifecycle = "2.8.4"
 activityCompose = "1.9.1"
 coroutines = "1.8.1"
+room = "2.6.1"
+
+# 3.7.0 rather than the newest release on purpose. This is the last version published as plain
+# Java; 3.8.0 rewrote the library in Kotlin, which would put a second Kotlin metadata version
+# on the compile classpath for one dependency that only has to open a port. It is also the
+# version this file's sibling, UsbSerialTransport, was written against — and since that class
+# cannot be run without the aircraft, being written against a known-good API is the only
+# assurance available. See the note in that file.
+usbSerial = "3.7.0"
 
 junit = "4.13.2"
 
@@ -38,6 +47,19 @@ androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navig
 # Coroutines
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# Room — the blackbox log (FR 5.3)
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+
+# USB-UART transport — the one piece that talks to the adapter itself. See UsbSerialTransport.
+# Sourced from JitPack; the repository is scoped to this group in settings.gradle.kts.
+#
+# The alias is `usb-serial`, not `usb-serial-for-android`, because the accessor is a Kotlin
+# property path: `libs.usb.serial.for.android` does not parse, since `for` is a keyword. The
+# artifact's real name is on the `name` field, which is what actually resolves.
+usb-serial = { group = "com.github.mik3y", name = "usb-serial-for-android", version.ref = "usbSerial" }
 
 # Test
 junit = { group = "junit", name = "junit", version.ref = "junit" }

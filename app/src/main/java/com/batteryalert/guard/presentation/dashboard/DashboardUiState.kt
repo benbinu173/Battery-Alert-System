@@ -27,6 +27,15 @@ data class DashboardUiState(
     val current: Double? = null,
     val temperature: Double? = null,
     val remainingCapacityMah: Double? = null,
+    /**
+     * The airframe's configured pack size, or null when the operator has not set one.
+     *
+     * Kept beside [remainingCapacityMah] because the two are only meaningful together: a
+     * remaining figure means something different on a 10 Ah pack than on a 30 Ah one, and
+     * showing the first without the second is how an operator ends up trusting a number that
+     * was built on someone else's airframe.
+     */
+    val packCapacityMah: Double? = null,
     val dischargeRateMahPerMin: Double? = null,
 
     // Cells

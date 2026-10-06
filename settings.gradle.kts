@@ -17,6 +17,14 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // The USB-UART transport's driver library is published on JitPack and nowhere else.
+        // Used for exactly one artifact (the `usb-serial` alias in libs.versions.toml);
+        // nothing else in this project resolves through here.
+        maven(url = "https://jitpack.io") {
+            content {
+                includeGroupByRegex("com\\.github\\.mik3y.*")
+            }
+        }
     }
 }
 

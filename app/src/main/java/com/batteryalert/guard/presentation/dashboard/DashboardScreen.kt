@@ -2,6 +2,7 @@ package com.batteryalert.guard.presentation.dashboard
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,8 +30,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.batteryalert.guard.domain.model.AlertRule
 import com.batteryalert.guard.domain.model.ConnectionState
 import com.batteryalert.guard.presentation.CELL_RULES
@@ -85,14 +83,29 @@ private val WIDE_LAYOUT_MIN_WIDTH = 720.dp
  * a 7" landscape controller where the two-column arrangement fits everything on one
  * screen without scrolling.
  */
+/**
+ * The dashboard, stateless.
+ *
+ * It takes the state and the callbacks rather than reaching for a ViewModel of its own, and
+ * that is not just a preview convenience. [com.batteryalert.guard.presentation.GuardApp]
+ * collects the state one level up so that navigating to the flight recorder does not stop
+ * the telemetry pipeline — which would leave a hole in the blackbox exactly while the
+ * operator was reading it, and would silence an alert raised while the log was on screen.
+ */
 @Composable
-fun DashboardScreen(viewModel: DashboardViewModel = hiltViewModel()) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
-
+fun DashboardScreen(
+    state: DashboardUiState,
+    onScenarioSelected: (String) -> Unit,
+    onSpeedSelected: (Double) -> Unit,
+    onOpenRecorder: () -> Unit,
+    onOpenAircraft: () -> Unit,
+) {
     DashboardContent(
         state = state,
-        onScenarioSelected = viewModel::onScenarioSelected,
-        onSpeedSelected = viewModel::onSpeedSelected,
+        onScenarioSelected = onScenarioSelected,
+        onSpeedSelected = onSpeedSelected,
+        onOpenRecorder = onOpenRecorder,
+        onOpenAircraft = onOpenAircraft,
     )
 }
 
@@ -101,6 +114,8 @@ private fun DashboardContent(
     state: DashboardUiState,
     onScenarioSelected: (String) -> Unit,
     onSpeedSelected: (Double) -> Unit,
+    onOpenRecorder: () -> Unit,
+    onOpenAircraft: () -> Unit,
 ) {
     BoxWithConstraints(
         modifier = Modifier
@@ -117,7 +132,11 @@ private fun DashboardContent(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            TopBar(state)
+            TopBar(
+                state = state,
+                onOpenRecorder = onOpenRecorder,
+                onOpenAircraft = onOpenAircraft,
+            )
             AlertBanner(state)
 
             if (wide) {
@@ -166,7 +185,11 @@ private fun DashboardContent(
 // --- Chrome -------------------------------------------------------------------------
 
 @Composable
-private fun TopBar(state: DashboardUiState) {
+private fun TopBar(
+    state: DashboardUiState,
+    onOpenRecorder: () -> Unit,
+    onOpenAircraft: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -192,6 +215,43 @@ private fun TopBar(state: DashboardUiState) {
             Spacer(Modifier.width(8.dp))
         }
         ConnectionPill(state.connectionState)
+        Spacer(Modifier.width(8.dp))
+        // Neutral accent, not a semantic colour: opening a log is not a safety state, and
+        // colouring it like one would put a fourth green/amber/red thing on a screen whose
+        // whole point is that those three mean something.
+        NavButton(label = "Flight recorder", onClick = onOpenRecorder)
+        Spacer(Modifier.width(6.dp))
+        // The aircraft screen carries the pack capacity the flight-time and RTL figures are
+        // built from, so the operator can reach the assumption behind a number from the
+        // number itself rather than having to remember where it was set.
+        NavButton(label = "Aircraft", onClick = onOpenAircraft)
+    }
+}
+
+/**
+ * The only navigation control on the dashboard.
+ *
+ * Deliberately not a `ChoiceChip`: that primitive means "this option is selected", and this
+ * is a door, not a setting.
+ */
+@Composable
+private fun NavButton(label: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(GuardColors.CardRaised)
+            .border(1.dp, GuardColors.Outline, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = GuardColors.TextSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
@@ -200,6 +260,7 @@ private fun ConnectionPill(connectionState: ConnectionState) {
     val (label, color) = when (connectionState) {
         ConnectionState.CONNECTED -> "Link up" to GuardColors.Healthy
         ConnectionState.CONNECTING -> "Connecting" to GuardColors.NoticeYellow
+        ConnectionState.RECONNECTING -> "Reconnecting" to GuardColors.NoticeYellow
         ConnectionState.DISCONNECTED -> "No link" to GuardColors.Idle
         ConnectionState.ERROR -> "Link error" to GuardColors.CriticalRed
     }
@@ -373,6 +434,20 @@ private fun BatteryCard(state: DashboardUiState) {
                         unit = "mAh",
                         modifier = Modifier.weight(1f),
                         valueFontSize = 24.sp,
+                    )
+                }
+
+                // Only when a capacity was configured. The demo source reports its charge
+                // left directly, so nothing is configured there and this line stays absent —
+                // a caption claiming a pack size nobody entered would be the app inventing a
+                // fact about the aircraft.
+                val configuredCapacity = state.packCapacityMah
+                if (configuredCapacity != null) {
+                    Text(
+                        text = "Computed from the ${configuredCapacity.format(0)} mAh pack " +
+                            "set on the Aircraft screen.",
+                        color = GuardColors.TextMuted,
+                        fontSize = 10.sp,
                     )
                 }
             }

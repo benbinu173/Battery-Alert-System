@@ -4,6 +4,23 @@
     <!-- Haptic alerts (FR 5.2). Normal permission: granted at install, no runtime prompt. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+        Not required, and that is deliberate.
+
+        The app talks to the flight controller over a USB-UART adapter, so on the target
+        hardware — a Skydroid G20 with a GR01 link — this device is always present. Declaring
+        it required would be true about the G20 and false about everything else: the simulator
+        runs anywhere, and the telemetry pipeline above the transport is the part a reviewer
+        will actually look at. A device without USB host gets the demo and a transport that
+        reports no adapter, which is a legible failure rather than an install the store refuses.
+
+        There is no matching <uses-permission>: USB access is granted per device at runtime,
+        through the dialog UsbSerialTransport raises, not through the manifest.
+    -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+
     <application
         android:name=".BatteryAlertApp"
         android:allowBackup="true"
