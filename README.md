@@ -665,7 +665,7 @@ interlock engaging, and it is reported, not offered as a control.
 
 Volume up. There is nothing to configure.
 
-The **Flight recorder** button in the top bar opens the log. Leave it running for a minute
+The **Recorder** button in the top bar opens the log. Leave it running for a minute
 and the summary card fills in: the worst level the flight reached, the rules that fired in
 the order the flight met them, the lowest pack and weakest cell, peak current and
 temperature, and how far from home it got. The table underneath shows the rows themselves,

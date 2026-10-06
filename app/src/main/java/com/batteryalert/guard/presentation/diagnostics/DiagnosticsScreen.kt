@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -120,17 +121,27 @@ private fun Header(state: DiagnosticsUiState, onBack: () -> Unit) {
             color = GuardColors.TextPrimary,
             fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false,
         )
         Spacer(Modifier.width(12.dp))
+        // The tagline yields before anything else does. A row over-subscribed by a few
+        // characters should lose part of a sentence nobody needs, not the row count the
+        // operator came here to read — which is what happened when this spacer carried the
+        // weight instead and collapsed to nothing.
         Text(
             text = "What the blackbox kept, and why",
             color = GuardColors.TextMuted,
             fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
         StatusPill(
             text = if (state.hasLog) "${state.rowCount} rows" else "empty",
             dotColor = if (state.hasLog) GuardColors.Healthy else GuardColors.Idle,
+            textColor = if (state.hasLog) GuardColors.Healthy else GuardColors.TextSecondary,
         )
         Spacer(Modifier.width(8.dp))
         SmallButton(label = "Dashboard", onClick = onBack)

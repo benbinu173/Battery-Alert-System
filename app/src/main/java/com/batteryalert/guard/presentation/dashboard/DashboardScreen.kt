@@ -28,6 +28,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.batteryalert.guard.domain.model.AlertRule
@@ -68,6 +70,23 @@ private const val CELL_IMBALANCE_LIMIT_VOLTS = 0.08
 
 /** Tables wider than this get the two-column layout. */
 private val WIDE_LAYOUT_MIN_WIDTH = 720.dp
+
+/**
+ * Where the header stops fitting on one line.
+ *
+ * Deliberately not [WIDE_LAYOUT_MIN_WIDTH]. The two numbers measure different things: the card
+ * grid needs 720dp before two columns read properly, while the header only needs room for a
+ * brand block, two status pills and the navigation pair. Sharing one number stacked the header
+ * on a screen that had ample room for it.
+ *
+ * The number is the header's natural width plus a gap worth having. Its four parts measure
+ * roughly 200 + 170 + 170dp, so much below this the flexible spacer between them reaches zero
+ * and the row starts eating its children instead. Squeezing is what a shared row does wrong:
+ * Compose takes the shortfall from whichever child can absorb it, and that is always the one
+ * whose text can wrap. The result is a header where "Recorder" is broken across three lines
+ * while everything around it looks fine, which is the fault this replaces.
+ */
+private val COMPACT_HEADER_BELOW = 620.dp
 
 /**
  * The single operator screen.
@@ -190,60 +209,136 @@ private fun TopBar(
     onOpenRecorder: () -> Unit,
     onOpenAircraft: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column {
-            Text(
-                text = "BATTERY GUARD",
-                color = GuardColors.TextPrimary,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.6.sp,
-            )
-            Text(
-                text = "Agricultural drone battery monitor",
-                color = GuardColors.TextMuted,
-                fontSize = 10.sp,
-                letterSpacing = 0.4.sp,
-            )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val roomy = maxWidth >= COMPACT_HEADER_BELOW
+
+        if (roomy) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Brand()
+                Spacer(Modifier.width(24.dp))
+                StatusCluster(state)
+                // The only element here allowed to give way, and the only one whose giving way
+                // costs nothing: it is the gap between what the app is reporting and what it
+                // will do. Pinning the navigation to the far edge with it is what makes those
+                // two read as one heading on the left and one action on the right, rather than
+                // as five controls queued across the screen.
+                Spacer(Modifier.weight(1f))
+                NavCluster(onOpenRecorder = onOpenRecorder, onOpenAircraft = onOpenAircraft)
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Weighted so the shortfall lands on the brand block's ellipsisable
+                    // subtitle rather than on the pills, which carry state the operator needs
+                    // and have no second line to fall back on.
+                    Brand(modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(12.dp))
+                    StatusCluster(state)
+                }
+                NavCluster(
+                    onOpenRecorder = onOpenRecorder,
+                    onOpenAircraft = onOpenAircraft,
+                    modifier = Modifier.align(Alignment.End),
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun Brand(modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(
+            text = "BATTERY GUARD",
+            color = GuardColors.TextPrimary,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.6.sp,
+            // Ellipsis rather than `softWrap = false`. Both keep this on one line, but an
+            // unclipped line would draw straight through the status pills beside it, and a
+            // truncated product name is a far smaller fault than an overlapping one.
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "Agricultural drone battery monitor",
+            color = GuardColors.TextMuted,
+            fontSize = 10.sp,
+            letterSpacing = 0.4.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * What the app currently *is*: whether the simulator is driving it, and whether the link is up.
+ *
+ * Grouped as one unit because the two always travel together and mean the same kind of thing.
+ * A gap between them and the navigation, rather than between each other, is what makes them
+ * read as a pair instead of as four controls in a queue.
+ */
+@Composable
+private fun StatusCluster(state: DashboardUiState) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         if (state.demoMode) {
             StatusPill(text = "Demo", dotColor = GuardColors.Accent)
             Spacer(Modifier.width(8.dp))
         }
         ConnectionPill(state.connectionState)
-        Spacer(Modifier.width(8.dp))
-        // Neutral accent, not a semantic colour: opening a log is not a safety state, and
-        // colouring it like one would put a fourth green/amber/red thing on a screen whose
-        // whole point is that those three mean something.
-        NavButton(label = "Flight recorder", onClick = onOpenRecorder)
-        Spacer(Modifier.width(6.dp))
-        // The aircraft screen carries the pack capacity the flight-time and RTL figures are
-        // built from, so the operator can reach the assumption behind a number from the
-        // number itself rather than having to remember where it was set.
-        NavButton(label = "Aircraft", onClick = onOpenAircraft)
     }
 }
 
 /**
- * The only navigation control on the dashboard.
+ * The dashboard's two destinations, drawn as one segmented control rather than two buttons.
  *
- * Deliberately not a `ChoiceChip`: that primitive means "this option is selected", and this
- * is a door, not a setting.
+ * Two identical bordered boxes sitting next to each other read as two unrelated controls that
+ * happen to be adjacent. The shared container and the hairline between them say the true thing:
+ * these are the same kind of action, and there are exactly two of them.
+ *
+ * Neutral accent throughout, not a semantic colour: opening a log is not a safety state, and
+ * colouring it like one would put a fourth green/amber/red thing on a screen whose whole
+ * argument is that those three mean something specific.
  */
 @Composable
-private fun NavButton(label: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(8.dp)
-    Box(
-        modifier = Modifier
+private fun NavCluster(
+    onOpenRecorder: () -> Unit,
+    onOpenAircraft: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(9.dp)
+    Row(
+        modifier = modifier
             .clip(shape)
             .background(GuardColors.CardRaised)
-            .border(1.dp, GuardColors.Outline, shape)
+            .border(1.dp, GuardColors.Outline, shape),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Named for the screen it opens, not for the file it reads. The recorder screen's own
+        // header says "Flight recorder" in full; repeating it here cost the width that the
+        // header needed and bought nothing the destination does not already say.
+        NavSegment(label = "Recorder", onClick = onOpenRecorder)
+        Rule(height = 18.dp)
+        // The aircraft screen carries the pack capacity the flight-time and RTL figures are
+        // built from, so the operator can reach the assumption behind a number from the number
+        // itself rather than having to remember where it was set.
+        NavSegment(label = "Aircraft", onClick = onOpenAircraft)
+    }
+}
+
+@Composable
+private fun NavSegment(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -251,8 +346,32 @@ private fun NavButton(label: String, onClick: () -> Unit) {
             color = GuardColors.TextSecondary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
+            letterSpacing = 0.3.sp,
+            // Not a preference. This label is the only thing in the header that can absorb an
+            // overflow, so it is the thing that gets crushed when the row is over-subscribed —
+            // and a destination broken across three lines is the least legible way to say the
+            // layout ran out of room. Held to one line, the worst case is a clipped word rather
+            // than a mangled one, and the breakpoint above means it does not come to that.
+            maxLines = 1,
+            softWrap = false,
         )
     }
+}
+
+/**
+ * A hairline separator, drawn rather than imported.
+ *
+ * Material's dividers carry their own colour and thickness conventions, and these two need to
+ * match `GuardColors.Outline` and disappear into the control they sit inside.
+ */
+@Composable
+private fun Rule(height: Dp, color: Color = GuardColors.Outline) {
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(height)
+            .background(color),
+    )
 }
 
 @Composable
