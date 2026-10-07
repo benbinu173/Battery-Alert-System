@@ -3,6 +3,8 @@ package com.batteryalert.guard.presentation.dashboard
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.batteryalert.guard.data.aircraft.AircraftProfileStore
+import com.batteryalert.guard.data.link.LinkMode
+import com.batteryalert.guard.data.link.LinkSettingsStore
 import com.batteryalert.guard.data.repository.BlackboxRecorder
 import com.batteryalert.guard.data.telemetry.DemoTelemetryController
 import com.batteryalert.guard.data.telemetry.MockScenario
@@ -52,6 +54,7 @@ class DashboardViewModel @Inject constructor(
     private val safetyCoordinator: SafetyCoordinator,
     private val blackboxRecorder: BlackboxRecorder,
     aircraftProfileStore: AircraftProfileStore,
+    linkSettingsStore: LinkSettingsStore,
 ) : ViewModel() {
 
     private data class TelemetrySnapshot(
@@ -78,6 +81,14 @@ class DashboardViewModel @Inject constructor(
          * the test needs a store to check an alert threshold.
          */
         val packCapacityMah: Double?,
+        /**
+         * Which source this frame came from.
+         *
+         * Carried for one reason, and it is not display: a mode change swaps the aircraft the
+         * numbers describe, and the rolling history window has to be thrown away when it does.
+         * See the reset below.
+         */
+        val linkMode: LinkMode,
     )
 
     /**
@@ -116,8 +127,18 @@ class DashboardViewModel @Inject constructor(
             // next launch. It is configuration, not telemetry, so it is deliberately outside
             // the runningFold below — changing it must not disturb the voltage history.
             aircraftProfileStore.packCapacityMah,
-        ) { telemetry, demo, packCapacityMah ->
-            SourceFrame(telemetry, demo, packCapacityMah)
+            // The link settings are read here for the same reason the capacity is: a mode
+            // chosen while the app is running has to reach the next frame, not the next
+            // launch. It is also what tells the pipeline that the aircraft underneath the
+            // numbers has changed — see the history reset below.
+            linkSettingsStore.settings,
+        ) { telemetry, demo, packCapacityMah, linkSettings ->
+            SourceFrame(
+                telemetry = telemetry,
+                demo = demo,
+                packCapacityMah = packCapacityMah,
+                linkMode = linkSettings.mode,
+            )
         }
             .runningFold<SourceFrame, Frame?>(null) { previous, source ->
                 val battery = source.telemetry.battery
@@ -133,10 +154,18 @@ class DashboardViewModel @Inject constructor(
                 // to 38 V in a single sample, which the alert engine would correctly read
                 // as a collapse and incorrectly announce as a rapid-sag Emergency. The
                 // discontinuity is in the source, so the source change resets the window.
-                val history = if (previous?.source?.demo?.scenario == source.demo.scenario) {
-                    previous.history
-                } else {
-                    TelemetryHistory()
+                //
+                // Changing the link mode does the same thing for the same reason, and it is
+                // worse when it is missed: the first frame after switching from the
+                // simulator to a real aircraft joins a simulated 49 V pack to whatever the
+                // aircraft is actually carrying, and the fitted decline across that step is
+                // a rapid-sag Emergency raised on no evidence at all. Nothing is wrong with
+                // the operator's aircraft; the window is simply describing two of them.
+                val history = when {
+                    previous == null -> TelemetryHistory()
+                    previous.source.demo.scenario != source.demo.scenario -> TelemetryHistory()
+                    previous.source.linkMode != source.linkMode -> TelemetryHistory()
+                    else -> previous.history
                 }
 
                 Frame(
@@ -288,6 +317,7 @@ class DashboardViewModel @Inject constructor(
         return DashboardUiState(
             connectionState = source.telemetry.connection,
             demoMode = demoController.isAvailable,
+            linkMode = source.linkMode,
             batteryPercentage = battery.batteryPercentage,
             totalVoltage = battery.totalVoltage,
             current = battery.current,

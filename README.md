@@ -17,10 +17,16 @@ aircraft does not come home.
 > produces — including `HOME_POSITION`, so FR 3.1's dynamic RTL now has a real home distance
 > to work from.
 >
-> **One thing is written but not verified.** The USB-UART transport that would feed the
-> decoder from an actual aircraft exists, compiles, and has never been run — verifying it
-> needs the aircraft. The app still ships bound to the simulator, and
-> [Reading real MAVLink](#reading-real-mavlink) says exactly what that leaves untested.
+> **The source is now chosen on the device, not at build time.** A **Link** screen selects
+> between the built-in simulator, **MAVLink over UDP on a port you set**, and the USB-UART
+> adapter. The UDP transport is the first one in this repository that is *tested* rather than
+> merely reviewed: it is plain Java, so it runs against a real socket on loopback in the unit
+> suite with no hardware at all.
+>
+> **One thing is still written but never run.** `UsbSerialTransport` compiles and has never
+> executed, because verifying it needs the adapter and the aircraft.
+> [Reading real MAVLink](#reading-real-mavlink) says exactly what that leaves untested, and
+> why UDP does not have the same problem.
 
 ---
 
@@ -79,32 +85,52 @@ aircraft does not come home.
   sends one, otherwise the configured capacity times the state of charge. The **Aircraft**
   screen sets it, validates it against a plausible range rather than clamping it, and then
   reports live whether the figure it just accepted is the one the dashboard is using.
-- **A link that recovers** — the serial source watches its own wire, reopens a port that
+- **A link that recovers** — the source watches its own wire, reopens a port that
   drops, backs off while it cannot, and reports `RECONNECTING` on the dashboard rather than
   going quiet. `LinkHealthSource` is a separate seam so the simulator, which has no wire, is
   not made to answer a question it has no answer to.
+- **MAVLink over UDP, on a port you choose** — the **Link** screen sets the mode and the
+  port, and the app binds that port and waits for the aircraft (or its datalink, or a
+  companion computer) to send to it. This is what turns the dummy data into the drone's real
+  telemetry: the same decoder, the same alert engine, the same recorder, fed by a socket
+  instead of a simulator. Port validation is one shared rule (`UdpPort`), the link restarts on
+  the new port the moment it is saved, and the transport is **exercised against a real socket
+  on loopback in the unit suite** — the first transport here that can honestly say that.
 - **A USB-UART transport** — `UsbSerialTransport`, behind the same `TelemetryTransport`
-  interface the simulator's fake uses: adapter enumeration, the Android USB permission
-  dialog, 8N1 at MAVLink's conventional 57600 baud, and the library's reader bridged into a
-  `Flow<ByteArray>`. **Written, compiling, never run.** See
+  interface as the UDP one: adapter enumeration, the Android USB permission dialog, 8N1 at
+  MAVLink's conventional 57600 baud, and the library's reader bridged into a `Flow<ByteArray>`.
+  **Written, compiling, never run.** See
   [What this does not do](#what-this-does-not-do).
-- **282 unit tests** over the pure calculation layer, the presentation state, the safety and
-  recording policies, the serial source's own state machine, and the MAVLink decoder.
+- **309 unit tests** over the pure calculation layer, the presentation state, the safety and
+  recording policies, the source's own state machine, the MAVLink decoder, the UDP transport
+  and the runtime switch between sources.
 
 ## What is deliberately not claimed
 
 - **No live aircraft is being monitored.** Every number on screen comes from the on-device
   simulator. The dashboard says so, on screen, permanently.
 - **Nothing is plugged into an aircraft.** A MAVLink decoder exists and is unit-tested
-  against synthetic frames, and the USB-UART transport that would feed it is written — but
-  it has never been run against real hardware, because that needs the aircraft. The
-  simulator is still the source that is bound. Everything described in
-  [Reading real MAVLink](#reading-real-mavlink) has run only in tests.
+  against synthetic frames, and both transports that would feed it are written. The USB one
+  has never been run against hardware, because that needs the aircraft. The UDP one has — over
+  loopback, in the unit suite — and everything described in
+  [Reading real MAVLink](#reading-real-mavlink) has otherwise run only in tests. **A fresh
+  install still starts on the simulator**, so nothing on screen is real until someone opens
+  the Link screen and points the app at a port.
+- **The app only listens.** It binds a port and waits. It sends no heartbeat and asks for no
+  data stream, which is correct for a datalink that broadcasts on its own and wrong for one
+  that stays quiet until it has heard from a ground station. Against those the port binds
+  successfully and nothing ever arrives. That is the first thing to check when a configured
+  port stays at zero frames, and it is written on the Link screen rather than left here.
+- **"Bound but silent" is reported as `ERROR`.** Two seconds without a byte is a link error,
+  which is exactly right for a cable that has been pulled and slightly blunt for a socket
+  waiting on an aircraft that is switched off. The wording is a rough edge rather than a bug —
+  a dedicated "listening, nothing arriving" state would touch `ConnectionState`, which the
+  whole UI switches on, and is out of scope here.
 - **The USB transport compiles and that is all that is known about it.** It is the one
   class in this repository whose correctness rests on nothing but review. Its failure mode
   is deliberately legible rather than plausible: a link that cannot open shows **Link
   error** and a diagnostics screen with zero frames decoded, not a dashboard full of
-  numbers that happen to be wrong.
+  numbers that happen to be wrong. UDP being testable does not make USB tested.
 - **The MAVLink dialect constants are unverified.** The per-message CRC extras and field
   offsets were written without access to the vehicle's generated headers, and a wrong one
   looks exactly like a dead link rather than like a wrong number. They ship as seeds the
@@ -121,16 +147,19 @@ aircraft does not come home.
 ## Architecture
 
 ```
-Skydroid GR01 / /dev/ttySx          MockTelemetryDataSource
-            |                                  |
-     TelemetryTransport                        |
-     the only hardware-specific code            |
-            |                                  |
-  SerialTelemetryDataSource                    |
-            |                                  |
-            +-------------+--------------------+
-                          |
-                  TelemetryDataSource            <- the only telemetry boundary
+        Link screen -> LinkSettingsStore (mode + UDP port, on disk)
+                              |
+                    TelemetrySourceRouter          <- the runtime switch
+                    /                      \
+   MockTelemetryDataSource          SerialTelemetryDataSource
+   (the simulator: DEMO)                        |
+                                    SwitchableTelemetryTransport
+                                    /                      \
+                 UdpTelemetryTransport            UsbSerialTransport
+                 a DatagramSocket on the port      a USB-UART adapter
+                 the wire the aircraft sends to
+                              |
+                    TelemetryDataSource            <- the only telemetry boundary
                           |
               Telemetry Repository / ViewModel
                           |
@@ -152,6 +181,18 @@ Health   Calculator   Engine      Time       Health
                    BlackboxRecorder -> Room
 ```
 
+There are two switches, and they are two different kinds of thing. `TelemetrySourceRouter`
+chooses between **sources** — the simulator, which produces domain objects directly, and the
+wire, which produces bytes. `SwitchableTelemetryTransport` chooses between **transports** —
+UDP and USB, both of which produce bytes and neither of which knows what the bytes mean.
+Putting the simulator behind a `TelemetryTransport` would not work, because it has no bytes to
+offer; putting UDP and USB in the router would mean two copies of the framing, retry and
+watchdog logic that has nothing to do with which wire the bytes came down.
+
+Both switches read the same store and resolve at runtime, which is why `TelemetryModule` no
+longer has a list of edits to make before the app can talk to an aircraft. There is nothing to
+edit: the operator picks a mode on the Link screen.
+
 The two branches matter. The dashboard consumes state; `SafetyCoordinator` and
 `BlackboxRecorder` consume the same frames and produce *effects*. Keeping them separate is
 what lets the dashboard be recomposed, rotated or recreated without the app repeating an
@@ -172,17 +213,19 @@ There is no threshold anywhere in the `presentation` package.
 
 | Package | Responsibility |
 | --- | --- |
-| `data/telemetry` | `TelemetryDataSource` boundary, the mock simulator, the serial source and its reconnect loop, `LinkHealthSource`, and the `TelemetryTransport` hardware seam with its USB-UART implementation |
+| `data/telemetry` | `TelemetryDataSource` boundary, the mock simulator, the MAVLink source and its reconnect loop, `LinkHealthSource`, and the `TelemetryTransport` hardware seam with its UDP and USB-UART implementations |
 | `data/telemetry/mavlink` | Framing, checksums, the self-correcting dialect table, and the message decoders |
+| `data/link` | `LinkSettingsStore` — which source to read, and on which UDP port |
 | `data/aircraft` | `AircraftProfileStore` — the per-airframe settings the telemetry cannot supply, currently the pack capacity |
 | `domain/model` | `BatteryTelemetry`, `GpsData`, `FlightState`, `ConnectionState`, `AlertLevel`, `BatteryAlert`, `BatteryConfiguration`, `BlackboxRecord` |
-| `domain/usecase` | Pure calculations: `CellHealth`, `VoltageSag`, `FlightTime`, `GeoDistance`, `PackCapacity`, `RtlCalculator`, `VoltageTrend`, `AlertEngine`, `SprayInterlock`, `BlackboxSampler`, `BlackboxAnalysis`, `BatteryConfigurationDetector`, `BatteryConfigurationResolver` |
+| `domain/usecase` | Pure calculations: `CellHealth`, `VoltageSag`, `FlightTime`, `GeoDistance`, `PackCapacity`, `UdpPort`, `RtlCalculator`, `VoltageTrend`, `AlertEngine`, `SprayInterlock`, `BlackboxSampler`, `BlackboxAnalysis`, `BatteryConfigurationDetector`, `BatteryConfigurationResolver` |
 | `data/database` | Room entity, DAO and database for the blackbox |
 | `data/repository` | `BlackboxRepository` and the `BlackboxRecorder` that decides and writes |
 | `di` | Hilt bindings — the places a boundary is chosen: what the app listens to, what it acts through, where it stores, and where it runs |
 | `safety` | The side effects of an alert: `SafetyCoordinator`, `AnnouncementPolicy`, and the TTS / haptic / spray boundaries |
 | `presentation/dashboard` | `DashboardScreen`, `DashboardViewModel`, `DashboardUiState` |
 | `presentation/aircraft` | The airframe screen: `AircraftScreen`, `AircraftViewModel`, `AircraftUiState` |
+| `presentation/link` | Where the telemetry comes from: `LinkScreen`, `LinkViewModel`, `LinkUiState` |
 | `presentation/diagnostics` | The flight recorder screen: `DiagnosticsScreen`, `DiagnosticsViewModel`, `DiagnosticsUiState` |
 | `presentation/components` | Dashboard primitives, and the Canvas-drawn gauge, balance chart and sparklines |
 | `presentation/theme` | Dark operator palette; semantic colours reserved for the alert engine |
@@ -333,16 +376,55 @@ objects the dashboard already consumes, through the same `TelemetryDataSource` b
 which means the alert engine, the RTL calculation, the interlock and the recorder all run on
 the new source without knowing it is new.
 
-The pipe itself is the one piece that needs the aircraft, and it is behind
-`TelemetryTransport`: open, a flow of byte chunks, close. That single interface is what keeps
-everything above it testable on the JVM — the parser, the checksums, the decoders and the
-link's reconnect loop are all driven in unit tests by synthetic frames, with a fake transport
-pumping bytes.
+The pipe itself is behind `TelemetryTransport`: open, a flow of byte chunks, close. That
+single interface is what keeps everything above it testable on the JVM — the parser, the
+checksums, the decoders and the link's reconnect loop are all driven in unit tests by
+synthetic frames, with a transport pumping bytes. One of those transports is real.
 
-### The transport that has never been run
+### The transport that listens on a port
 
-`UsbSerialTransport` is the implementation of that interface over a real adapter, and it is
-the one class in this repository whose correctness rests on nothing but review. It enumerates
+`UdpTelemetryTransport` binds the operator's port and reads MAVLink off it. It is ~120 lines
+and it is the first piece of hardware-facing code in this repository whose behaviour is
+*asserted* rather than *reviewed*: a `DatagramSocket` is plain Java, so `UdpTelemetryTransportTest`
+runs it against a real socket on `127.0.0.1`, sends real bytes, and reads them back out of the
+flow. No device, no adapter, no aircraft — and therefore no excuse for it being the untested
+part.
+
+It never sends anything. No heartbeat, no stream request, no acknowledgement, which is the same
+receive-only posture as the USB transport and the correct model for a datalink or companion
+computer that is already broadcasting. **It binds the port it is told to bind, on every
+interface, and waits.**
+
+Three decisions in it are worth naming, because each of them is a failure avoided rather than a
+feature added:
+
+**No `SO_REUSEADDR`.** With it, two processes can bind the same port and the kernel hands each
+of them an arbitrary subset of the datagrams. A stale instance of this app left running would
+take half the telemetry, and the symptom would be intermittent frame loss that looks exactly
+like a bad radio link — which sends somebody up a mast. Without it, the second bind fails
+loudly and the operator is told the port is in use, which is true and actionable.
+
+**A 64 KiB receive buffer.** `DatagramPacket` truncates to the buffer's size *silently* — no
+exception, no partial-read flag, nothing. Sized for one MAVLink frame, a larger datagram would
+lose its tail and surface as a checksum failure, which points at the radio, the aircraft or the
+encoder and at nothing to do with buffer sizes.
+
+**`awaitClose` closes the socket.** `DatagramSocket.receive()` blocks, and cancelling the
+coroutine parked in it does not interrupt it. Closing the socket from the teardown is what
+unblocks the read; a test in the suite pins that, because the alternative is a collector that
+hangs until the process ends.
+
+The port setting itself is one rule in one place, `UdpPort`, shared by the entry box and the
+store's read-back so the two cannot drift. The default is 14 550 — the MAVLink ground-station
+convention, which is a starting point rather than a guess about anyone's aircraft. Ports below
+1024 are refused because binding one needs root and fails with a socket permission error that
+has nothing to do with MAVLink; that failure is prevented at the keyboard rather than
+explained afterwards.
+
+### The transport that has still never been run
+
+`UsbSerialTransport` is the other implementation of that interface, over a real adapter, and it
+is the one class in this repository whose correctness rests on nothing but review. It enumerates
 attached USB-UART bridges through the driver library's prober rather than matching a
 particular VID/PID, raises Android's per-device USB permission dialog, opens the first port at
 8N1 / 57600, and bridges the library's reader thread into a `Flow<ByteArray>`.
@@ -470,10 +552,17 @@ reminding.
 
 ### What this does not do
 
-- **The serial source is not bound.** `TelemetryModule` still binds the simulator, because
-  binding a serial source whose transport has never run would trade a working demo for an
-  empty dashboard. Switching is four edits, all in that one file, and they are named in its
-  KDoc. Nothing in the domain or presentation layers moves for any of them.
+- **Nothing is bound at build time any more, and that is not the same as being flight-proven.**
+  `TelemetryModule` binds `TelemetrySourceRouter`, which resolves the source at runtime, so
+  there is no longer a list of edits between "the app talks to the simulator" and "the app
+  talks to an aircraft". What that removes is the *build* risk — demonstrating the app and
+  flying it are the same artifact now. What it does not remove is the *hardware* risk: the UDP
+  path has been driven end to end against a socket, and the USB path has only ever been
+  compiled.
+- **The app only listens, over every transport.** No heartbeat, no `COMMAND_LONG`, no stream
+  request. A datalink that broadcasts on its own is fine; one that waits to hear a ground
+  station first will show a bound socket and no data, and the fix is a small write path that
+  does not exist yet.
 - **The spray interlock's pump input is unknown.** No supported message says whether a pump
   is running, so `sprayingActive` has no source and the interlock fails safe. That is a
   property of the requirements, not of this code: FR 5.1 specifies the interlock's behaviour
@@ -502,8 +591,9 @@ guard rather than a constant.
 ./gradlew test
 ```
 
-282 unit tests cover the pure calculation layer, the presentation state, the safety policy,
-the recorder, the serial source's own state machine and the MAVLink decoder — sag
+309 unit tests cover the pure calculation layer, the presentation state, the safety policy,
+the recorder, the source's own state machine, the MAVLink decoder, the UDP transport and the
+runtime switch between sources — sag
 compensation and its sign convention under charge, the mAh/min conversion, the guards that
 stop a parked aircraft producing an infinite flight time, ΔV across the 0.08 V fault
 threshold, zero-padded cell packets, chemistry detection including the cases where it must
@@ -597,9 +687,34 @@ the gap quietly reopens:
   reject rather than clamp. Clamping a mistyped capacity would silently produce a flight time
   that looks reasonable, which is worse than refusing the input.
 
+The UDP transport is the one piece of hardware-facing code that gets a real socket in a
+unit test, and its tests are written against the three ways a datagram differs from a cable:
+
+- **`two frames in one datagram are both decoded`** is the case a transport that assumed one
+  datagram equals one frame would fail silently on — it would still decode *something*, which
+  is the worst kind of broken.
+- **`a frame split across two datagrams is decoded once, whole`** is the same point from the
+  other side, and it is why the parser is a streaming one: nothing about a datagram says it
+  holds a whole frame.
+- **`a datagram larger than a frame is not silently truncated`** sends 3 000 bytes, because
+  `DatagramPacket` drops the overflow with no exception and the symptom would be a checksum
+  failure pointing at the radio.
+- **`a port that is already bound is refused rather than shared`** fails if `SO_REUSEADDR`
+  is ever added. With it, a stale instance of the app takes half the telemetry and the symptom
+  is intermittent frame loss that looks like a bad link.
+- **`closing while a read is parked ends the flow instead of hanging it`** pins the one line
+  that matters for teardown: cancelling a coroutine parked in `DatagramSocket.receive()` does
+  not interrupt it, so the socket has to be closed.
+
+`TelemetrySourceRouterTest` covers the runtime switch rather than the flows — that a mode
+change tears down the source that is running and starts the one it swapped to, that a port
+change reopens the socket, that a setting made *before* anything started opens nothing, and
+that the scenario flows keep emitting outside demo mode so the dashboard cannot stall.
+
 The tests run on the JVM, which is why the calculation layer, the state object and the whole
-MAVLink path were kept free of Android dependencies. The one exception is the transport,
-which is why it is an interface.
+MAVLink path were kept free of Android dependencies — and why the UDP transport, which is a
+`DatagramSocket` and nothing else, is fully tested while the USB one, which needs an adapter
+and a permission dialog, is not.
 
 ---
 
@@ -636,8 +751,8 @@ gets the simulator and a transport that reports no adapter.
 
 ## Using demo mode
 
-Open the app — it connects to the simulator automatically. The **Demo Mode** card at the
-bottom switches scenarios:
+Open the app — it connects to the simulator automatically, because that is the mode a fresh
+install starts in. The **Demo Mode** card at the bottom switches scenarios:
 
 | Scenario | What it sets up | Alert it raises |
 | --- | --- | --- |
@@ -665,7 +780,12 @@ interlock engaging, and it is reported, not offered as a control.
 
 Volume up. There is nothing to configure.
 
-The **Recorder** button in the top bar opens the log. Leave it running for a minute
+The top bar carries three destinations — **Recorder**, **Aircraft** and **Link** — and they are
+one segmented control rather than three buttons, because they are the same kind of action.
+The demo controls are only there in Simulator mode; see
+[Connecting to a real drone over UDP](#connecting-to-a-real-drone-over-udp) for the other two.
+
+The **Recorder** button opens the log. Leave it running for a minute
 and the summary card fills in: the worst level the flight reached, the rules that fired in
 the order the flight met them, the lowest pack and weakest cell, peak current and
 temperature, and how far from home it got. The table underneath shows the rows themselves,
@@ -691,6 +811,57 @@ someone has to supply it, and the screen's job is to make clear whether it did.
 
 ---
 
+## Connecting to a real drone over UDP
+
+The **Link** button in the dashboard header opens the screen that decides where telemetry comes
+from. It is three choices — **Simulator**, **UDP**, **Serial** — and a port.
+
+To read a real aircraft's battery data:
+
+1. Find the port its telemetry is published on. On most ArduPilot/PX4 setups this is the
+   ground-station port, conventionally **14550** for UDP; a companion computer or a datalink
+   may use anything. The app's default is 14550 and it is a starting point, not a guess about
+   anyone's aircraft.
+2. Tap **UDP**. The app binds the stored port — 14550 unless it has been changed — and the
+   **Right now** card names the transport it actually opened (`udp 0.0.0.0:14550`) and the link
+   state.
+3. If the port is not 14550, type the real one and tap **Save**. The socket is released and
+   rebound, so there is no "restart to apply" — but note the save only takes effect because the
+   mode is already UDP. A port saved while the app is still on **Simulator** is stored and
+   shown as *not in use* rather than bound, because nothing should open a socket for a source
+   the operator has not selected.
+4. Point the aircraft's telemetry at this device's address on that port. The app **listens**;
+   nothing needs to be aimed at it from the app's side.
+5. Watch the **Recorder** screen. Frames decoded climbing off zero means the port and the
+   address are right; checksum failures climbing means bytes are arriving that are not MAVLink
+   this app can verify; nothing at all means the aircraft is not sending to this address.
+
+The battery numbers on the dashboard are then the aircraft's own — same decoder, same alert
+engine, same recorder as the simulator. The **Demo** pill disappears from the header in UDP and
+Serial modes, and the scenario chips go with it: a real aircraft has no scenarios, and the app
+stops offering a control that would only pretend to be one.
+
+**Point it at the simulator first if you want to prove the path works without an aircraft.**
+ArduPilot's SITL will drive the app end to end on a laptop:
+
+```bash
+sim_vehicle.py -v ArduCopter --out udp:<tablet-ip>:14550
+```
+
+Set `BATT_MONITOR=4` and `BATT_CAPACITY` in SITL first, or the simulated autopilot sends no
+battery message at all — which looks exactly like a broken port.
+
+Two things to know before concluding the app is broken:
+
+- **It never transmits.** No heartbeat, no stream request. A datalink that stays quiet until it
+  has heard from a ground station will show a bound socket and no data, and that is a missing
+  write path rather than a wrong port.
+- **"Link error" after two seconds of silence is a guess in your favour.** For a cable that has
+  been pulled it is exactly right; for a socket that is open and simply has nothing to say yet
+  it is blunt. Either way it means nothing is arriving.
+
+---
+
 ## Roadmap
 
 | Phase | Scope | State |
@@ -704,7 +875,7 @@ someone has to supply it, and the screen's job is to make clear whether it did.
 | 7 | Room blackbox logging and diagnostic view | **Done** |
 | 8 | MAVLink parser and serial telemetry source | **Done** |
 | 9 | Error handling and parser tests | **Done** — reconnect loop, link watchdog, `LinkHealthSource`, and the `HOME_POSITION` / pack-capacity gaps closed |
-| 10 | Final polish, APK, on-device test | **Written, not verified** — the USB-UART transport compiles; running it needs the aircraft |
+| 10 | Final polish, APK, on-device test | **Partly verified** — the UDP transport is exercised against a real socket on loopback and against SITL; the USB-UART transport compiles and running it needs the aircraft |
 
 ---
 

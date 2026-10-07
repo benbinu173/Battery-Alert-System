@@ -1,5 +1,6 @@
 package com.batteryalert.guard.presentation.dashboard
 
+import com.batteryalert.guard.data.link.LinkMode
 import com.batteryalert.guard.domain.model.AlertLevel
 import com.batteryalert.guard.domain.model.AlertRule
 import com.batteryalert.guard.domain.model.BatteryAlert
@@ -20,6 +21,17 @@ import com.batteryalert.guard.domain.usecase.RtlAssessment
 data class DashboardUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val demoMode: Boolean = false,
+
+    /**
+     * Which source the numbers on this screen came from.
+     *
+     * Carried so the footer can say something true in every mode. It used to say "simulated
+     * telemetry, no aircraft is being monitored" as a constant, which was honest while the
+     * simulator was the only source and would be a lie the moment the app is reading a real
+     * one — and a safety display that misstates where its numbers came from is worse than one
+     * that says nothing.
+     */
+    val linkMode: LinkMode = LinkMode.DEMO,
 
     // Battery
     val batteryPercentage: Int? = null,

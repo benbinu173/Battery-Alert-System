@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.batteryalert.guard.domain.model.AlertRule
+import com.batteryalert.guard.data.link.LinkMode
 import com.batteryalert.guard.domain.model.ConnectionState
 import com.batteryalert.guard.presentation.CELL_RULES
 import com.batteryalert.guard.presentation.PACK_VOLTAGE_RULES
@@ -118,6 +119,7 @@ fun DashboardScreen(
     onSpeedSelected: (Double) -> Unit,
     onOpenRecorder: () -> Unit,
     onOpenAircraft: () -> Unit,
+    onOpenLink: () -> Unit,
 ) {
     DashboardContent(
         state = state,
@@ -125,6 +127,7 @@ fun DashboardScreen(
         onSpeedSelected = onSpeedSelected,
         onOpenRecorder = onOpenRecorder,
         onOpenAircraft = onOpenAircraft,
+        onOpenLink = onOpenLink,
     )
 }
 
@@ -135,6 +138,7 @@ private fun DashboardContent(
     onSpeedSelected: (Double) -> Unit,
     onOpenRecorder: () -> Unit,
     onOpenAircraft: () -> Unit,
+    onOpenLink: () -> Unit,
 ) {
     BoxWithConstraints(
         modifier = Modifier
@@ -155,6 +159,7 @@ private fun DashboardContent(
                 state = state,
                 onOpenRecorder = onOpenRecorder,
                 onOpenAircraft = onOpenAircraft,
+                onOpenLink = onOpenLink,
             )
             AlertBanner(state)
 
@@ -196,7 +201,7 @@ private fun DashboardContent(
                 )
             }
 
-            DataSourceDisclaimer()
+            DataSourceDisclaimer(state)
         }
     }
 }
@@ -208,6 +213,7 @@ private fun TopBar(
     state: DashboardUiState,
     onOpenRecorder: () -> Unit,
     onOpenAircraft: () -> Unit,
+    onOpenLink: () -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val roomy = maxWidth >= COMPACT_HEADER_BELOW
@@ -226,7 +232,11 @@ private fun TopBar(
                 // two read as one heading on the left and one action on the right, rather than
                 // as five controls queued across the screen.
                 Spacer(Modifier.weight(1f))
-                NavCluster(onOpenRecorder = onOpenRecorder, onOpenAircraft = onOpenAircraft)
+                NavCluster(
+                    onOpenRecorder = onOpenRecorder,
+                    onOpenAircraft = onOpenAircraft,
+                    onOpenLink = onOpenLink,
+                )
             }
         } else {
             Column(
@@ -244,6 +254,7 @@ private fun TopBar(
                 NavCluster(
                     onOpenRecorder = onOpenRecorder,
                     onOpenAircraft = onOpenAircraft,
+                    onOpenLink = onOpenLink,
                     modifier = Modifier.align(Alignment.End),
                 )
             }
@@ -297,11 +308,21 @@ private fun StatusCluster(state: DashboardUiState) {
 }
 
 /**
- * The dashboard's two destinations, drawn as one segmented control rather than two buttons.
+ * The dashboard's three destinations, drawn as one segmented control rather than three buttons.
  *
- * Two identical bordered boxes sitting next to each other read as two unrelated controls that
- * happen to be adjacent. The shared container and the hairline between them say the true thing:
- * these are the same kind of action, and there are exactly two of them.
+ * Three identical bordered boxes sitting next to each other read as three unrelated controls
+ * that happen to be adjacent. The shared container and the hairlines between them say the true
+ * thing: these are the same kind of action, and there are exactly three of them.
+ *
+ * Three is also the point at which the ordering starts to carry meaning, so the segments are
+ * ordered by how far ahead the operator is looking. The recorder is what already happened, and
+ * it sits first because it is the one that gets read most on the ground. The aircraft is the
+ * assumption the numbers above are built from. The link is the wire the numbers arrive over.
+ *
+ * Horizontal padding on the segments came down from 14 dp to 12 dp when the third arrived. Three
+ * segments at the old width would have pushed the cluster past what the compact breakpoint
+ * leaves it on a 620 dp row, and a destination that falls off the edge is worse than one that is
+ * three characters closer to its neighbour.
  *
  * Neutral accent throughout, not a semantic colour: opening a log is not a safety state, and
  * colouring it like one would put a fourth green/amber/red thing on a screen whose whole
@@ -311,6 +332,7 @@ private fun StatusCluster(state: DashboardUiState) {
 private fun NavCluster(
     onOpenRecorder: () -> Unit,
     onOpenAircraft: () -> Unit,
+    onOpenLink: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(9.dp)
@@ -330,6 +352,12 @@ private fun NavCluster(
         // built from, so the operator can reach the assumption behind a number from the number
         // itself rather than having to remember where it was set.
         NavSegment(label = "Aircraft", onClick = onOpenAircraft)
+        Rule(height = 18.dp)
+        // The other half of the same question. "Aircraft" is what the app knows that the link
+        // cannot tell it; "Link" is what it is listening to. An operator checking why a number
+        // looks wrong needs both, and they belong next to each other rather than one of them
+        // being buried in a settings menu.
+        NavSegment(label = "Link", onClick = onOpenLink)
     }
 }
 
@@ -338,7 +366,8 @@ private fun NavSegment(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            // 12 dp, down from 14 dp when the cluster grew to three segments. See NavCluster.
+            .padding(horizontal = 12.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -361,7 +390,7 @@ private fun NavSegment(label: String, onClick: () -> Unit) {
 /**
  * A hairline separator, drawn rather than imported.
  *
- * Material's dividers carry their own colour and thickness conventions, and these two need to
+ * Material's dividers carry their own colour and thickness conventions, and these need to
  * match `GuardColors.Outline` and disappear into the control they sit inside.
  */
 @Composable
@@ -1108,14 +1137,34 @@ private fun DemoControlsCard(
 /**
  * States plainly what this build is and is not reading. A safety display that lets an
  * operator believe simulated numbers came off the aircraft would be worse than useless.
+ *
+ * It has to be able to say both things. The line was a constant — "simulated telemetry, no
+ * aircraft is being monitored" — which was honest exactly as long as the simulator was the
+ * only source. Now that a real link can be selected, that sentence would be a false
+ * reassurance on the one screen where a false reassurance is most expensive: an operator
+ * reading a sagging real pack while the footer tells them it is a simulation.
  */
 @Composable
-private fun DataSourceDisclaimer() {
-    Text(
-        text = "Simulated telemetry generated on-device. No Skydroid GR01 link is connected " +
+private fun DataSourceDisclaimer(state: DashboardUiState) {
+    val text = if (state.demoMode) {
+        "Simulated telemetry generated on-device. No Skydroid GR01 link is connected " +
             "and no aircraft is being monitored. Sag compensation, discharge rate, " +
             "flight-time estimation and the dynamic RTL calculation are live; the alert " +
-            "engine and its thresholds are not.",
+            "engine and its thresholds are not."
+    } else {
+        // Deliberately does not claim the link is up. The source is selected; whether it is
+        // delivering is what the connection pill in the header is for, and repeating it here
+        // would be two places to disagree about the same fact.
+        val transport = if (state.linkMode == LinkMode.UDP) "UDP" else "USB"
+
+        "Reading live telemetry from the aircraft over $transport. Every figure above is " +
+            "the aircraft's own. Sag compensation, discharge rate, flight-time estimation, " +
+            "the dynamic RTL calculation and the alert engine are live, and the blackbox is " +
+            "recording what the aircraft actually did."
+    }
+
+    Text(
+        text = text,
         color = GuardColors.TextMuted,
         fontSize = 11.sp,
         lineHeight = 15.sp,

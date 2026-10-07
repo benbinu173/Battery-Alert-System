@@ -5,6 +5,16 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
+        MAVLink over UDP. This is a normal permission: granted at install, never prompted for.
+
+        It is easy to think it is only needed for HTTP, and it is not — binding a DatagramSocket
+        requires it too, and without it `UdpTelemetryTransport.open()` throws a SecurityException
+        that reads like a socket problem rather than a manifest one. Nothing is sent from here;
+        the permission covers the socket either way.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
         Not required, and that is deliberate.
 
         The app talks to the flight controller over a USB-UART adapter, so on the target

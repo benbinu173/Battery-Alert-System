@@ -11,9 +11,10 @@ import com.batteryalert.guard.presentation.aircraft.AircraftScreen
 import com.batteryalert.guard.presentation.dashboard.DashboardScreen
 import com.batteryalert.guard.presentation.dashboard.DashboardViewModel
 import com.batteryalert.guard.presentation.diagnostics.DiagnosticsScreen
+import com.batteryalert.guard.presentation.link.LinkScreen
 
 /**
- * The app's three destinations, and the one place that decides which is showing.
+ * The app's four destinations, and the one place that decides which is showing.
  *
  * ### Why the dashboard's state is collected here rather than inside the dashboard
  *
@@ -49,12 +50,17 @@ fun GuardApp() {
             onBack = { destination = Destination.DASHBOARD },
         )
 
+        Destination.LINK -> LinkScreen(
+            onBack = { destination = Destination.DASHBOARD },
+        )
+
         Destination.DASHBOARD -> DashboardScreen(
             state = dashboardState,
             onScenarioSelected = dashboardViewModel::onScenarioSelected,
             onSpeedSelected = dashboardViewModel::onSpeedSelected,
             onOpenRecorder = { destination = Destination.RECORDER },
             onOpenAircraft = { destination = Destination.AIRCRAFT },
+            onOpenLink = { destination = Destination.LINK },
         )
     }
 }
@@ -66,4 +72,4 @@ fun GuardApp() {
  * that matters here, because inserting a destination in the middle of this list is a change
  * with no meaning and must not reopen a different screen on restore.
  */
-private enum class Destination { DASHBOARD, RECORDER, AIRCRAFT }
+private enum class Destination { DASHBOARD, RECORDER, AIRCRAFT, LINK }

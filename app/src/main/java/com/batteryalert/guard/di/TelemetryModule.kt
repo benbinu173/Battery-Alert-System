@@ -2,8 +2,10 @@ package com.batteryalert.guard.di
 
 import com.batteryalert.guard.data.telemetry.DemoTelemetryController
 import com.batteryalert.guard.data.telemetry.LinkHealthSource
-import com.batteryalert.guard.data.telemetry.MockTelemetryDataSource
+import com.batteryalert.guard.data.telemetry.SwitchableTelemetryTransport
 import com.batteryalert.guard.data.telemetry.TelemetryDataSource
+import com.batteryalert.guard.data.telemetry.TelemetrySourceRouter
+import com.batteryalert.guard.data.telemetry.TelemetryTransport
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -16,31 +18,32 @@ import javax.inject.Singleton
 /**
  * Single place where the app decides what telemetry it is talking to.
  *
- * Nothing in the domain or presentation layers knows the difference between the simulator and a
- * real aircraft, and that is the property this file exists to hold. Every class that cares —
- * the alert engine, the flight-time estimate, the blackbox sampler — is handed a
- * [TelemetryDataSource] and reads the same flows either way.
+ * Nothing in the domain or presentation layers knows the difference between the simulator, a UDP
+ * socket and a USB adapter, and that is the property this file exists to hold. Every class that
+ * cares — the alert engine, the flight-time estimate, the blackbox sampler — is handed a
+ * [TelemetryDataSource] and reads the same flows whichever is in use.
  *
- * What is bound below is the simulator, and that is a schedule decision rather than an
- * unfinished one: Module 27 asks not to spend the time on hardware before the core works, and
- * every part of the core is exercised by tests against synthetic frames. The hardware path
- * exists in full — `UsbSerialTransport` opens the adapter, `SerialTelemetryDataSource` frames
- * and decodes what comes off it — and is unverified, because verifying it needs the aircraft.
+ * ### What changed, and what did not
  *
- * Switching to it is four edits, all in this file:
+ * This file used to bind the simulator and carry a list of "four edits" to make for hardware:
+ * swap in `SerialTelemetryDataSource`, swap in `NoOpDemoController`, bind a transport, bind the
+ * link-health source. All four were compile-time decisions, which meant demonstrating the app and
+ * flying it were two different builds, and the one being demonstrated was never the one being
+ * flown.
  *
- * 1. bind `SerialTelemetryDataSource` to [TelemetryDataSource];
- * 2. bind `NoOpDemoController` to [DemoTelemetryController] — a real aircraft has no scenarios,
- *    and the dashboard decides whether to draw the demo controls from `isAvailable`;
- * 3. bind `UsbSerialTransport` to `TelemetryTransport`, replacing nothing, since the simulator
- *    has no transport at all;
- * 4. bind `SerialTelemetryDataSource` as the [LinkHealthSource], replacing the stub below, so
- *    the diagnostics screen reports a real link instead of "not measured".
+ * There is now one edit to make, and nobody has to make it. [TelemetrySourceRouter] is bound to
+ * all three interfaces; it holds the simulator and the wire and forwards to whichever the
+ * operator selected on the Link screen. [SwitchableTelemetryTransport] does the same one layer
+ * down, between UDP and USB. So the four items above are all still *bindings* — they are just
+ * resolved at runtime by the two routers rather than at build time by this file.
  *
- * It is worth being clear about what those four edits do *not* buy. They make the app talk to
- * an adapter; they do not make it work on the aircraft. Nothing below has been run against a
- * real G20, so the honest expectation is that the first attempt needs debugging, and the
- * README says so in as many words.
+ * ### What that does not buy
+ *
+ * The USB transport is now reachable in a release build rather than a debug-only one, and it is
+ * still the one artifact here that has never executed: it needs the adapter and the aircraft.
+ * UDP is a different story and deliberately so — `UdpTelemetryTransport` has no Android
+ * dependency and is exercised over loopback in `UdpTelemetryTransportTest`. Being bound is not
+ * the same as being tested, and only one of these two claims that.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -48,14 +51,30 @@ abstract class TelemetryModule {
 
     @Binds
     @Singleton
-    abstract fun bindTelemetryDataSource(impl: MockTelemetryDataSource): TelemetryDataSource
+    abstract fun bindTelemetryDataSource(impl: TelemetrySourceRouter): TelemetryDataSource
 
-    // Same singleton instance as above, exposed through the narrower demo-only view.
-    // When a serial source replaces the mock, this binding is replaced with a no-op
-    // implementation reporting isAvailable = false.
+    // The same singleton as above, seen through three narrower views. `DemoTelemetryController`
+    // no longer needs a no-op implementation to answer for a real aircraft: the router answers
+    // `isAvailable` from the current mode, so the dashboard's demo controls appear and disappear
+    // with it rather than being compiled out.
     @Binds
     @Singleton
-    abstract fun bindDemoTelemetryController(impl: MockTelemetryDataSource): DemoTelemetryController
+    abstract fun bindDemoTelemetryController(impl: TelemetrySourceRouter): DemoTelemetryController
+
+    // Routed rather than stubbed. In demo mode the router forwards the simulator's honest
+    // "I have no wire" (LinkHealthSource.NoLinkHealth) instead of this module pre-deciding it,
+    // because which of the two answers is correct is now a runtime property.
+    @Binds
+    @Singleton
+    abstract fun bindLinkHealthSource(impl: TelemetrySourceRouter): LinkHealthSource
+
+    // `SerialTelemetryDataSource` takes one transport and holds it for its whole life, so the
+    // choice between a socket and a cable has to be made behind the interface. Binding this is
+    // what lets a UDP port be configured without the retry loop, the watchdog or the link-health
+    // reporting knowing that anything changed.
+    @Binds
+    @Singleton
+    abstract fun bindTelemetryTransport(impl: SwitchableTelemetryTransport): TelemetryTransport
 
     companion object {
 
@@ -66,6 +85,10 @@ abstract class TelemetryModule {
          * the alert engine for the thread that raises the warning. Provided here, rather than
          * hardcoded in the source, so a test can substitute a virtual clock for it — see
          * [TelemetryDispatcher].
+         *
+         * The UDP transport and the source router share it, which is deliberate: all three are
+         * the same kind of work — waiting on a thing outside the app — and giving the socket its
+         * own thread would be a fourth place to reason about ordering for no gain.
          */
         @Provides
         @Singleton
@@ -83,17 +106,5 @@ abstract class TelemetryModule {
         @Singleton
         @TelemetryClock
         fun provideTelemetryClock(): () -> Long = System::currentTimeMillis
-
-        /**
-         * What the diagnostics screen gets when it asks how the wire is doing.
-         *
-         * The stub, because the bound source is the simulator — it has no wire, and inventing
-         * a report full of zeroes for it would read as a link that is healthy and quiet.
-         * `SerialTelemetryDataSource` implements [LinkHealthSource] too, so on real hardware
-         * this becomes a one-line swap and nothing downstream changes.
-         */
-        @Provides
-        @Singleton
-        fun provideLinkHealthSource(): LinkHealthSource = LinkHealthSource.NoLinkHealth
     }
 }

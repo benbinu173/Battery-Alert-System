@@ -28,18 +28,19 @@ import javax.inject.Singleton
 /**
  * A [TelemetryDataSource] reading real MAVLink from a [TelemetryTransport].
  *
- * ### Not wired up yet, and that is on purpose
+ * ### Wired up, and reachable
  *
- * Nothing binds this class. `TelemetryModule` still binds the simulator, and this is the
- * other one-line change waiting in that module: bind this to [TelemetryDataSource] and
- * `NoOpDemoController` to [DemoTelemetryController], and provide a [TelemetryTransport]. The
- * transport is the piece that needs the aircraft — a USB-UART adapter on a Skydroid G20 — and
- * it is deliberately left until the decoder is proven against synthetic frames, which is work
- * that can be done without one.
+ * This used to carry a note saying nothing bound it. That is no longer true: `TelemetrySourceRouter`
+ * constructs it, and the Link screen decides at runtime whether it or the simulator is the source.
+ * When it is, the operator's telemetry comes through here.
  *
- * Binding it before a transport exists would mean shipping a build whose dashboard is
- * permanently empty. Not binding it means this code is exercised by tests and by nothing else,
- * which is the honest state of a component that has never seen the hardware.
+ * Note the distinction between *bound* and *bound to the interface*. `TelemetryModule` binds
+ * `TelemetrySourceRouter` to [TelemetryDataSource], not this class, because which of the two
+ * sources is in use is chosen on the Link screen rather than by the build. The name of the class
+ * is now the only thing here that describes a specific wire, and it is the wrong name — it reads
+ * UDP just as happily, because everything above the transport is protocol-agnostic. The
+ * transport underneath it is what varies: `SwitchableTelemetryTransport` picks between
+ * `UdpTelemetryTransport` and `UsbSerialTransport` from the same setting.
  *
  * ### Two ways a link can be broken
  *
